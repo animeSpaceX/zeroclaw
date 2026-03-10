@@ -17,6 +17,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, error, info, warn};
 
 /// Default timeout for background sub-agent provider calls.
 const SPAWN_TIMEOUT_SECS: u64 = 300;
@@ -34,6 +35,8 @@ pub struct SubAgentSpawnTool {
     registry: Arc<SubAgentRegistry>,
     parent_tools: Arc<Vec<Arc<dyn Tool>>>,
     multimodal_config: crate::config::MultimodalConfig,
+    /// Optional broadcast channel to notify WebSocket sessions when a subagent completes.
+    completion_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 }
 
 impl SubAgentSpawnTool {
@@ -55,7 +58,17 @@ impl SubAgentSpawnTool {
             registry,
             parent_tools,
             multimodal_config,
+            completion_tx: None,
         }
+    }
+
+    /// Attach a broadcast channel for subagent completion events.
+    pub fn with_completion_tx(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    ) -> Self {
+        self.completion_tx = Some(tx);
+        self
     }
 }
 
@@ -237,8 +250,21 @@ impl Tool for SubAgentSpawnTool {
         // Clone what we need for the spawned task
         let registry = self.registry.clone();
         let sid = session_id.clone();
+        let completion_tx = self.completion_tx.clone();
+
+        info!(
+            target: "subagent",
+            agent = %agent_name,
+            session_id = %session_id,
+            provider = %agent_config.provider,
+            model = %agent_config.model,
+            agentic = is_agentic,
+            "Spawning subagent"
+        );
 
         let handle = tokio::spawn(async move {
+            let start = std::time::Instant::now();
+
             let result = if is_agentic {
                 run_agentic_background(
                     &agent_name_owned,
@@ -254,22 +280,62 @@ impl Tool for SubAgentSpawnTool {
                     .await
             };
 
-            match result {
+            let elapsed = start.elapsed();
+            let (success, error_msg) = match &result {
                 Ok(tool_result) => {
                     if tool_result.success {
-                        registry.complete(&sid, tool_result);
-                    } else {
-                        registry.fail(
-                            &sid,
-                            tool_result
-                                .error
-                                .unwrap_or_else(|| "Unknown error".to_string()),
+                        registry.complete(&sid, tool_result.clone());
+                        info!(
+                            target: "subagent",
+                            agent = %agent_name_owned,
+                            session_id = %sid,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            "Subagent completed successfully"
                         );
+                        (true, None)
+                    } else {
+                        let err = tool_result
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "Unknown error".to_string());
+                        error!(
+                            target: "subagent",
+                            agent = %agent_name_owned,
+                            session_id = %sid,
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            error = %err,
+                            "Subagent failed"
+                        );
+                        registry.fail(&sid, err.clone());
+                        (false, Some(err))
                     }
                 }
                 Err(e) => {
-                    registry.fail(&sid, format!("Agent '{agent_name_owned}' error: {e}"));
+                    let err = format!("Agent '{agent_name_owned}' error: {e}");
+                    error!(
+                        target: "subagent",
+                        agent = %agent_name_owned,
+                        session_id = %sid,
+                        elapsed_ms = elapsed.as_millis() as u64,
+                        error = %err,
+                        "Subagent error"
+                    );
+                    registry.fail(&sid, err.clone());
+                    (false, Some(err))
                 }
+            };
+
+            // Notify WebSocket sessions about completion
+            if let Some(tx) = completion_tx {
+                let event = json!({
+                    "type": "subagent_completed",
+                    "session_id": sid,
+                    "agent": agent_name_owned,
+                    "success": success,
+                    "elapsed_ms": elapsed.as_millis() as u64,
+                    "error": error_msg,
+                });
+                let _ = tx.send(event);
             }
         });
 
@@ -297,6 +363,7 @@ async fn run_simple_background(
     full_prompt: &str,
 ) -> anyhow::Result<ToolResult> {
     let temperature = agent_config.temperature.unwrap_or(0.7);
+    debug!(target: "subagent", agent = %agent_name, mode = "simple", "Starting simple background call");
 
     let result = tokio::time::timeout(
         Duration::from_secs(SPAWN_TIMEOUT_SECS),
@@ -399,6 +466,7 @@ async fn run_agentic_background(
     multimodal_config: &crate::config::MultimodalConfig,
 ) -> anyhow::Result<ToolResult> {
     if agent_config.allowed_tools.is_empty() {
+        warn!(target: "subagent", agent = %agent_name, "Agentic agent has empty allowed_tools");
         return Ok(ToolResult {
             success: false,
             output: String::new(),
@@ -427,6 +495,7 @@ async fn run_agentic_background(
         .collect();
 
     if sub_tools.is_empty() {
+        warn!(target: "subagent", agent = %agent_name, allowed = ?agent_config.allowed_tools, "No executable tools after filtering");
         return Ok(ToolResult {
             success: false,
             output: String::new(),
@@ -436,6 +505,16 @@ async fn run_agentic_background(
             )),
         });
     }
+
+    let tool_names: Vec<&str> = sub_tools.iter().map(|t| t.name()).collect();
+    info!(
+        target: "subagent",
+        agent = %agent_name,
+        mode = "agentic",
+        tools = ?tool_names,
+        max_iterations = agent_config.max_iterations,
+        "Starting agentic loop"
+    );
 
     let temperature = agent_config.temperature.unwrap_or(0.7);
     let mut history = Vec::new();

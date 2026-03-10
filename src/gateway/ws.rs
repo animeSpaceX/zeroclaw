@@ -15,6 +15,7 @@ use crate::approval::ApprovalManager;
 use crate::providers::ChatMessage;
 use axum::{
     extract::{
+        connect_info::ConnectInfo,
         ws::{Message, WebSocket},
         State, WebSocketUpgrade,
     },
@@ -22,10 +23,24 @@ use axum::{
     response::IntoResponse,
 };
 use serde_json::json;
+use std::path::Path;
 
 const EMPTY_WS_RESPONSE_FALLBACK: &str =
     "Tool execution completed, but the model returned no final text response. Please ask me to summarize the result.";
 const WS_CHAT_SUBPROTOCOL: &str = "zeroclaw.v1";
+
+/// Append a chat log entry to `chat.jsonl` in the given config directory.
+fn append_chat_log(config_dir: &Path, entry: &serde_json::Value) {
+    use std::io::Write;
+    let log_path = config_dir.join("chat.jsonl");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        let _ = writeln!(file, "{}", entry);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WsDeltaEvent {
@@ -233,6 +248,7 @@ async fn emit_ws_delta_event(socket: &mut WebSocket, event: WsDeltaEvent) {
 /// GET /ws/chat — WebSocket upgrade for agent chat
 pub async fn handle_ws_chat(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
@@ -249,11 +265,11 @@ pub async fn handle_ws_chat(
     }
 
     ws.protocols([WS_CHAT_SUBPROTOCOL])
-        .on_upgrade(move |socket| handle_socket(socket, state))
+        .on_upgrade(move |socket| handle_socket(socket, state, addr))
         .into_response()
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
+async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::net::SocketAddr) {
     // Maintain conversation history for this WebSocket session
     let mut history: Vec<ChatMessage> = Vec::new();
 
@@ -278,7 +294,40 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         ApprovalManager::from_config(&config_guard.autonomy)
     };
 
-    while let Some(msg) = socket.recv().await {
+    let (chat_log_enabled, chat_log_dir) = {
+        let config_guard = state.config.lock();
+        let enabled = config_guard.gateway.chat_log;
+        let dir = config_guard
+            .config_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        (enabled, dir)
+    };
+
+    // Subscribe to subagent completion events
+    let mut completion_rx = state.event_tx.subscribe();
+
+    loop {
+    // Use select! to listen for both incoming WS messages and subagent completions
+    let msg = tokio::select! {
+        ws_msg = socket.recv() => {
+            match ws_msg {
+                Some(msg) => msg,
+                None => break,
+            }
+        }
+        completion = completion_rx.recv() => {
+            if let Ok(event) = completion {
+                if event.get("type").and_then(|v| v.as_str()) == Some("subagent_completed") {
+                    let _ = socket.send(Message::Text(event.to_string().into())).await;
+                }
+            }
+            continue;
+        }
+    };
+
+    {
         let msg = match msg {
             Ok(Message::Text(text)) => text,
             Ok(Message::Close(_)) | Err(_) => break,
@@ -308,6 +357,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         // Add user message to history
         history.push(ChatMessage::user(&content));
 
+        if chat_log_enabled {
+            append_chat_log(&chat_log_dir, &json!({
+                "ts": chrono::Utc::now().to_rfc3339(),
+                "role": "user",
+                "content": content,
+            }));
+        }
+
+        let msg_recv_time = std::time::Instant::now();
+        tracing::info!(target: "ws_timing", peer = %peer_addr, content_len = content.len(), "📥 WS message received");
+
         // Get provider info
         let provider_label = state
             .config
@@ -324,6 +384,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         }));
 
         // Run the agent loop with real-time delta streaming for web clients.
+        tracing::info!(target: "ws_timing", provider = %provider_label, model = %state.model, history_len = history.len(), "🚀 Starting agent loop");
+
         let result = {
             let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(128);
             let mut loop_future = std::pin::pin!(run_tool_call_loop(
@@ -368,12 +430,25 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             }
         };
 
+        let elapsed_ms = msg_recv_time.elapsed().as_millis();
+        tracing::info!(target: "ws_timing", elapsed_ms = elapsed_ms, result = matches!(result, Ok(_)), "✅ Agent loop completed");
+
         match result {
             Ok(response) => {
                 let safe_response =
                     finalize_ws_response(&response, &history, state.tools_registry_exec.as_ref());
                 // Add assistant response to history
                 history.push(ChatMessage::assistant(&safe_response));
+
+                if chat_log_enabled {
+                    append_chat_log(&chat_log_dir, &json!({
+                        "ts": chrono::Utc::now().to_rfc3339(),
+                        "role": "assistant",
+                        "content": safe_response,
+                        "elapsed_ms": elapsed_ms,
+                        "model": &state.model,
+                    }));
+                }
 
                 // Send the full response as a done message
                 let done = serde_json::json!({
@@ -391,6 +466,16 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             }
             Err(e) => {
                 let sanitized = crate::providers::sanitize_api_error(&e.to_string());
+
+                if chat_log_enabled {
+                    append_chat_log(&chat_log_dir, &json!({
+                        "ts": chrono::Utc::now().to_rfc3339(),
+                        "role": "error",
+                        "content": sanitized,
+                        "elapsed_ms": elapsed_ms,
+                    }));
+                }
+
                 let err = serde_json::json!({
                     "type": "error",
                     "message": sanitized,
@@ -405,7 +490,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 }));
             }
         }
-    }
+    } // end inner block
+    } // end loop
 }
 
 fn extract_ws_bearer_token(headers: &HeaderMap) -> Option<String> {

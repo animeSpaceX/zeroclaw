@@ -909,6 +909,8 @@ pub(crate) async fn run_tool_call_loop(
 
         let llm_started_at = Instant::now();
 
+        tracing::debug!(target: "agent_timing", iteration = iteration + 1, provider = %provider_name, model = %model, "🌐 Calling LLM API");
+
         // Fire void hook before LLM call
         if let Some(hooks) = hooks {
             hooks.fire_llm_input(history, model).await;
@@ -1020,6 +1022,13 @@ pub(crate) async fn run_tool_call_loop(
                 });
 
                 let response_text = resp.text_or_empty().to_string();
+
+                // DEBUG: Log LLM response timing
+                let _llm_elapsed_ms = llm_started_at.elapsed().as_millis();
+                tracing::debug!(target: "agent_timing", iteration = iteration + 1, duration_ms = _llm_elapsed_ms,
+                               input_tokens = resp_input_tokens, output_tokens = resp_output_tokens,
+                               tool_calls = resp.tool_calls.len(), "📥 LLM response received");
+
                 // First try native structured tool calls (OpenAI-format).
                 // Fall back to text-based parsing (XML tags, markdown blocks,
                 // GLM format) only if the provider returned no native calls —
@@ -1534,7 +1543,11 @@ pub(crate) async fn run_tool_call_loop(
             });
         }
 
-        let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
+        // DEBUG: Log tool execution start
+            let _tool_exec_start = std::time::Instant::now();
+            tracing::debug!(target: "tool_timing", tool_count = executable_calls.len(), parallel = allow_parallel_execution, "🔧 Executing tools");
+
+            let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
             execute_tools_parallel(
                 &executable_calls,
                 tools_registry,
@@ -1551,6 +1564,9 @@ pub(crate) async fn run_tool_call_loop(
             )
             .await?
         };
+
+        let _tool_exec_duration = _tool_exec_start.elapsed();
+            tracing::debug!(target: "tool_timing", duration_ms = _tool_exec_duration.as_millis(), tool_count = executable_calls.len(), "✅ Tool execution completed");
 
         for ((idx, call), outcome) in executable_indices
             .iter()
@@ -1859,6 +1875,7 @@ pub async fn run(
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        None,
     );
 
     let peripheral_tools: Vec<Box<dyn Tool>> =
@@ -2347,6 +2364,7 @@ pub async fn process_message(config: Config, message: &str) -> Result<String> {
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        None,
     );
     let peripheral_tools: Vec<Box<dyn Tool>> =
         crate::peripherals::create_peripheral_tools(&config.peripherals).await?;
