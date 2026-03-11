@@ -17,6 +17,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use crate::agent::loop_::{DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL};
 use tracing::{debug, error, info, warn};
 
 /// Default timeout for background sub-agent provider calls.
@@ -273,6 +274,7 @@ impl Tool for SubAgentSpawnTool {
                     &full_prompt,
                     &parent_tools,
                     &multimodal_config,
+                    completion_tx.clone(),
                 )
                 .await
             } else {
@@ -281,9 +283,10 @@ impl Tool for SubAgentSpawnTool {
             };
 
             let elapsed = start.elapsed();
-            let (success, error_msg) = match &result {
+            let (success, error_msg, result_output) = match &result {
                 Ok(tool_result) => {
                     if tool_result.success {
+                        let output = tool_result.output.clone();
                         registry.complete(&sid, tool_result.clone());
                         info!(
                             target: "subagent",
@@ -292,7 +295,7 @@ impl Tool for SubAgentSpawnTool {
                             elapsed_ms = elapsed.as_millis() as u64,
                             "Subagent completed successfully"
                         );
-                        (true, None)
+                        (true, None, Some(output))
                     } else {
                         let err = tool_result
                             .error
@@ -307,7 +310,7 @@ impl Tool for SubAgentSpawnTool {
                             "Subagent failed"
                         );
                         registry.fail(&sid, err.clone());
-                        (false, Some(err))
+                        (false, Some(err), None)
                     }
                 }
                 Err(e) => {
@@ -321,11 +324,11 @@ impl Tool for SubAgentSpawnTool {
                         "Subagent error"
                     );
                     registry.fail(&sid, err.clone());
-                    (false, Some(err))
+                    (false, Some(err), None)
                 }
             };
 
-            // Notify WebSocket sessions about completion
+            // Notify WebSocket sessions about completion (include result for auto-processing)
             if let Some(tx) = completion_tx {
                 let event = json!({
                     "type": "subagent_completed",
@@ -334,6 +337,7 @@ impl Tool for SubAgentSpawnTool {
                     "success": success,
                     "elapsed_ms": elapsed.as_millis() as u64,
                     "error": error_msg,
+                    "result": result_output,
                 });
                 let _ = tx.send(event);
             }
@@ -457,6 +461,79 @@ impl Observer for NoopObserver {
     }
 }
 
+/// Parse a delta event from the agentic loop into a broadcast-ready JSON event.
+fn parse_subagent_delta(agent_name: &str, delta: &str) -> Option<serde_json::Value> {
+    if delta == DRAFT_CLEAR_SENTINEL {
+        return None;
+    }
+
+    let progress = delta.strip_prefix(DRAFT_PROGRESS_SENTINEL)?;
+    let progress = progress.trim();
+
+    if let Some(rest) = progress.strip_prefix("⏳ ") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        let (name, hint) = match rest.split_once(": ") {
+            Some((name, hint)) => {
+                let hint = hint.trim();
+                (
+                    name.trim().to_string(),
+                    if hint.is_empty() {
+                        None
+                    } else {
+                        Some(hint.to_string())
+                    },
+                )
+            }
+            None => (rest.to_string(), None),
+        };
+        return Some(json!({
+            "type": "subagent_tool_call",
+            "agent": agent_name,
+            "name": name,
+            "hint": hint,
+        }));
+    }
+
+    if let Some(rest) = progress.strip_prefix("✅ ") {
+        let trimmed = rest.trim();
+        if let Some((name_part, duration_part)) = trimmed.rsplit_once(" (") {
+            let secs = duration_part
+                .strip_suffix(')')
+                .and_then(|s| s.strip_suffix('s'))
+                .and_then(|s| s.parse::<u64>().ok());
+            return Some(json!({
+                "type": "subagent_tool_result",
+                "agent": agent_name,
+                "name": name_part.trim(),
+                "success": true,
+                "duration_secs": secs,
+            }));
+        }
+    }
+
+    if let Some(rest) = progress.strip_prefix("❌ ") {
+        let trimmed = rest.trim();
+        if let Some((name_part, duration_part)) = trimmed.rsplit_once(" (") {
+            let secs = duration_part
+                .strip_suffix(')')
+                .and_then(|s| s.strip_suffix('s'))
+                .and_then(|s| s.parse::<u64>().ok());
+            return Some(json!({
+                "type": "subagent_tool_result",
+                "agent": agent_name,
+                "name": name_part.trim(),
+                "success": false,
+                "duration_secs": secs,
+            }));
+        }
+    }
+
+    None
+}
+
 async fn run_agentic_background(
     agent_name: &str,
     agent_config: &DelegateAgentConfig,
@@ -464,6 +541,7 @@ async fn run_agentic_background(
     full_prompt: &str,
     parent_tools: &[Arc<dyn Tool>],
     multimodal_config: &crate::config::MultimodalConfig,
+    event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 ) -> anyhow::Result<ToolResult> {
     if agent_config.allowed_tools.is_empty() {
         warn!(target: "subagent", agent = %agent_name, "Agentic agent has empty allowed_tools");
@@ -525,6 +603,23 @@ async fn run_agentic_background(
 
     let noop_observer = NoopObserver;
 
+    // Set up delta streaming to forward subagent tool events to WebSocket clients
+    let delta_tx = if let Some(ref broadcast_tx) = event_tx {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(128);
+        let broadcast = broadcast_tx.clone();
+        let agent = agent_name.to_string();
+        tokio::spawn(async move {
+            while let Some(delta) = rx.recv().await {
+                if let Some(event) = parse_subagent_delta(&agent, &delta) {
+                    let _ = broadcast.send(event);
+                }
+            }
+        });
+        Some(tx)
+    } else {
+        None
+    };
+
     let result = tokio::time::timeout(
         Duration::from_secs(SPAWN_TIMEOUT_SECS),
         crate::agent::loop_::run_tool_call_loop(
@@ -541,7 +636,7 @@ async fn run_agentic_background(
             multimodal_config,
             agent_config.max_iterations,
             None,
-            None,
+            delta_tx,
             None,
             &[],
         ),

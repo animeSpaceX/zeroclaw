@@ -245,6 +245,34 @@ async fn emit_ws_delta_event(socket: &mut WebSocket, event: WsDeltaEvent) {
     let _ = socket.send(Message::Text(payload.to_string().into())).await;
 }
 
+/// Build a notification message when a subagent completes, to be injected into the conversation.
+fn build_subagent_notification(event: &serde_json::Value) -> String {
+    let agent = event["agent"].as_str().unwrap_or("unknown");
+    let success = event["success"].as_bool().unwrap_or(false);
+    let elapsed_ms = event["elapsed_ms"].as_u64().unwrap_or(0);
+    let elapsed_secs = elapsed_ms / 1000;
+
+    if success {
+        let result = event["result"].as_str().unwrap_or("[no output]");
+        // Truncate very long results to avoid context overflow
+        let truncated = if result.len() > 3000 {
+            format!("{}...\n(truncated)", &result[..3000])
+        } else {
+            result.to_string()
+        };
+        format!(
+            "[Subagent completed] '{}' finished successfully ({}s).\n\nResult:\n{}",
+            agent, elapsed_secs, truncated
+        )
+    } else {
+        let error = event["error"].as_str().unwrap_or("unknown error");
+        format!(
+            "[Subagent failed] '{}' failed ({}s).\n\nError: {}",
+            agent, elapsed_secs, error
+        )
+    }
+}
+
 /// GET /ws/chat — WebSocket upgrade for agent chat
 pub async fn handle_ws_chat(
     State(state): State<AppState>,
@@ -309,51 +337,52 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     let mut completion_rx = state.event_tx.subscribe();
 
     loop {
-    // Use select! to listen for both incoming WS messages and subagent completions
-    let msg = tokio::select! {
+    // Use select! to listen for both incoming WS messages and subagent completions.
+    // Both sources produce a `content: String` that gets fed into the agent loop.
+    let content: String = tokio::select! {
         ws_msg = socket.recv() => {
             match ws_msg {
-                Some(msg) => msg,
-                None => break,
+                Some(Ok(Message::Text(text))) => {
+                    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            let err = serde_json::json!({"type": "error", "message": "Invalid JSON"});
+                            let _ = socket.send(Message::Text(err.to_string().into())).await;
+                            continue;
+                        }
+                    };
+                    let msg_type = parsed["type"].as_str().unwrap_or("");
+                    if msg_type != "message" { continue; }
+                    let c = parsed["content"].as_str().unwrap_or("").to_string();
+                    if c.is_empty() { continue; }
+                    c
+                }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                _ => continue,
             }
         }
         completion = completion_rx.recv() => {
             if let Ok(event) = completion {
-                if event.get("type").and_then(|v| v.as_str()) == Some("subagent_completed") {
-                    let _ = socket.send(Message::Text(event.to_string().into())).await;
+                match event.get("type").and_then(|v| v.as_str()) {
+                    Some("subagent_completed") => {
+                        // Forward event to frontend
+                        let _ = socket.send(Message::Text(event.to_string().into())).await;
+                        // Build notification and feed into agent loop
+                        build_subagent_notification(&event)
+                    }
+                    Some("subagent_tool_call" | "subagent_tool_result") => {
+                        let _ = socket.send(Message::Text(event.to_string().into())).await;
+                        continue;
+                    }
+                    _ => continue,
                 }
+            } else {
+                continue;
             }
-            continue;
         }
     };
 
     {
-        let msg = match msg {
-            Ok(Message::Text(text)) => text,
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => continue,
-        };
-
-        // Parse incoming message
-        let parsed: serde_json::Value = match serde_json::from_str(&msg) {
-            Ok(v) => v,
-            Err(_) => {
-                let err = serde_json::json!({"type": "error", "message": "Invalid JSON"});
-                let _ = socket.send(Message::Text(err.to_string().into())).await;
-                continue;
-            }
-        };
-
-        let msg_type = parsed["type"].as_str().unwrap_or("");
-        if msg_type != "message" {
-            continue;
-        }
-
-        let content = parsed["content"].as_str().unwrap_or("").to_string();
-        if content.is_empty() {
-            continue;
-        }
-
         // Add user message to history
         history.push(ChatMessage::user(&content));
 
