@@ -7,6 +7,22 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+/// Thinking/reasoning control for models that support it (e.g. doubao-seed-2.0).
+/// Serializes as `{"type": "disabled"}` to suppress reasoning tokens.
+#[derive(Debug, Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+impl ThinkingConfig {
+    fn disabled() -> Self {
+        Self {
+            kind: "disabled".to_string(),
+        }
+    }
+}
+
 pub struct OpenAiProvider {
     base_url: String,
     credential: Option<String>,
@@ -20,6 +36,8 @@ struct ChatRequest {
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +85,8 @@ struct NativeChatRequest {
     tools: Option<Vec<NativeToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,6 +361,7 @@ impl Provider for OpenAiProvider {
             messages,
             temperature,
             max_tokens: self.max_tokens_override,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         let response = self
@@ -383,6 +404,7 @@ impl Provider for OpenAiProvider {
             max_tokens: self.max_tokens_override,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         let response = self
@@ -447,6 +469,7 @@ impl Provider for OpenAiProvider {
             max_tokens: self.max_tokens_override,
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         let response = self

@@ -1074,6 +1074,11 @@ pub struct GatewayConfig {
     /// Node-control protocol scaffold (`[gateway.node_control]`).
     #[serde(default)]
     pub node_control: NodeControlConfig,
+
+    /// Enable chat content logging to `chat.jsonl` in the config directory.
+    /// When true, user messages and assistant responses are persisted as JSONL.
+    #[serde(default)]
+    pub chat_log: bool,
 }
 
 /// Node-control scaffold settings under `[gateway.node_control]`.
@@ -1131,7 +1136,7 @@ impl Default for GatewayConfig {
         Self {
             port: default_gateway_port(),
             host: default_gateway_host(),
-            require_pairing: true,
+            require_pairing: false,
             allow_public_bind: false,
             paired_tokens: Vec::new(),
             pair_rate_limit_per_minute: default_pair_rate_limit(),
@@ -1141,6 +1146,7 @@ impl Default for GatewayConfig {
             idempotency_ttl_secs: default_idempotency_ttl_secs(),
             idempotency_max_keys: default_gateway_idempotency_max_keys(),
             node_control: NodeControlConfig::default(),
+            chat_log: false,
         }
     }
 }
@@ -8713,7 +8719,7 @@ channel_id = "C123"
         let g = GatewayConfig {
             port: 42617,
             host: "127.0.0.1".into(),
-            require_pairing: true,
+            require_pairing: false,
             allow_public_bind: false,
             paired_tokens: vec!["zc_test_token".into()],
             pair_rate_limit_per_minute: 12,

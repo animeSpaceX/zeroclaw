@@ -390,6 +390,22 @@ impl OpenAiCompatibleProvider {
     }
 }
 
+/// Thinking/reasoning control for models that support it (e.g. doubao-seed-2.0).
+/// Serializes as `{"type": "disabled"}` to suppress reasoning tokens.
+#[derive(Debug, Clone, Serialize)]
+struct ThinkingConfig {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+impl ThinkingConfig {
+    fn disabled() -> Self {
+        Self {
+            kind: "disabled".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ApiChatRequest {
     model: String,
@@ -403,6 +419,8 @@ struct ApiChatRequest {
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -600,6 +618,8 @@ struct NativeChatRequest {
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1937,6 +1957,7 @@ impl Provider for OpenAiCompatibleProvider {
             stream: Some(false),
             tools: None,
             tool_choice: None,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         let url = self.chat_completions_url();
@@ -2068,6 +2089,7 @@ impl Provider for OpenAiCompatibleProvider {
             stream: Some(false),
             tools: None,
             tool_choice: None,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         if self.should_use_responses_mode() {
@@ -2195,6 +2217,7 @@ impl Provider for OpenAiCompatibleProvider {
             } else {
                 Some("auto".to_string())
             },
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         if self.should_use_responses_mode() {
@@ -2315,6 +2338,7 @@ impl Provider for OpenAiCompatibleProvider {
             stream: Some(false),
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         if self.should_use_responses_mode() {
@@ -2493,6 +2517,7 @@ impl Provider for OpenAiCompatibleProvider {
                 stream: Some(options.enabled),
                 tools: tools.clone(),
                 tool_choice: tools.as_ref().map(|_| "auto".to_string()),
+                thinking: Some(ThinkingConfig::disabled()),
             })
         } else {
             let messages = effective_messages
@@ -2515,6 +2540,7 @@ impl Provider for OpenAiCompatibleProvider {
                 stream: Some(options.enabled),
                 tools: None,
                 tool_choice: None,
+                thinking: Some(ThinkingConfig::disabled()),
             })
         };
 
@@ -2620,6 +2646,7 @@ impl Provider for OpenAiCompatibleProvider {
             stream: Some(options.enabled),
             tools: None,
             tool_choice: None,
+            thinking: Some(ThinkingConfig::disabled()),
         };
 
         let url = self.chat_completions_url();
@@ -3717,6 +3744,7 @@ mod tests {
             stream: Some(false),
             tools: Some(tools),
             tool_choice: Some("auto".to_string()),
+            thinking: Some(ThinkingConfig::disabled()),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"tools\""));
