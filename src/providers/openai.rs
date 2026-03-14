@@ -361,7 +361,7 @@ impl Provider for OpenAiProvider {
             messages,
             temperature,
             max_tokens: self.max_tokens_override,
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: None,
         };
 
         let response = self
@@ -404,7 +404,7 @@ impl Provider for OpenAiProvider {
             max_tokens: self.max_tokens_override,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: None,
         };
 
         let response = self
@@ -469,7 +469,7 @@ impl Provider for OpenAiProvider {
             max_tokens: self.max_tokens_override,
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: None,
         };
 
         let response = self
