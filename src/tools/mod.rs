@@ -57,6 +57,9 @@ pub mod schedule;
 pub mod schema;
 pub mod screenshot;
 pub mod shell;
+pub mod storage_download;
+pub mod storage_list;
+pub mod storage_upload;
 pub mod subagent_list;
 pub mod subagent_manage;
 pub mod subagent_registry;
@@ -108,6 +111,9 @@ pub use schedule::ScheduleTool;
 pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
+pub use storage_download::StorageDownloadTool;
+pub use storage_list::StorageListTool;
+pub use storage_upload::StorageUploadTool;
 pub use subagent_list::SubAgentListTool;
 pub use subagent_manage::SubAgentManageTool;
 pub use subagent_registry::SubAgentRegistry;
@@ -541,6 +547,25 @@ pub fn all_tools_with_runtime(
                 tracing::warn!("agents_ipc: failed to open IPC database: {e}");
             }
         }
+    }
+
+    // Team cloud storage (active when running under platform gateway)
+    if let (Ok(gw_port), Ok(team_id)) = (
+        std::env::var("GATEWAY_PORT"),
+        std::env::var("TEAM_ID"),
+    ) {
+        let gateway_url = format!("http://127.0.0.1:{gw_port}");
+        tool_arcs.push(Arc::new(StorageUploadTool::new(
+            workspace_dir.to_path_buf(),
+            gateway_url.clone(),
+            team_id.clone(),
+        )));
+        tool_arcs.push(Arc::new(StorageDownloadTool::new(
+            workspace_dir.to_path_buf(),
+            gateway_url.clone(),
+            team_id.clone(),
+        )));
+        tool_arcs.push(Arc::new(StorageListTool::new(gateway_url, team_id)));
     }
 
     boxed_registry_from_arcs(tool_arcs)
