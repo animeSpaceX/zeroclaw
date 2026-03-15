@@ -57,8 +57,10 @@ pub mod schedule;
 pub mod schema;
 pub mod screenshot;
 pub mod shell;
+pub mod storage;
 pub mod storage_download;
 pub mod storage_list;
+pub mod storage_read;
 pub mod storage_upload;
 pub mod subagent_list;
 pub mod subagent_manage;
@@ -111,8 +113,10 @@ pub use schedule::ScheduleTool;
 pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
+pub use storage::StorageTool;
 pub use storage_download::StorageDownloadTool;
 pub use storage_list::StorageListTool;
+pub use storage_read::StorageReadTool;
 pub use storage_upload::StorageUploadTool;
 pub use subagent_list::SubAgentListTool;
 pub use subagent_manage::SubAgentManageTool;
@@ -555,17 +559,11 @@ pub fn all_tools_with_runtime(
         std::env::var("TEAM_ID"),
     ) {
         let gateway_url = format!("http://127.0.0.1:{gw_port}");
-        tool_arcs.push(Arc::new(StorageUploadTool::new(
+        tool_arcs.push(Arc::new(StorageTool::new(
             workspace_dir.to_path_buf(),
-            gateway_url.clone(),
-            team_id.clone(),
+            gateway_url,
+            team_id,
         )));
-        tool_arcs.push(Arc::new(StorageDownloadTool::new(
-            workspace_dir.to_path_buf(),
-            gateway_url.clone(),
-            team_id.clone(),
-        )));
-        tool_arcs.push(Arc::new(StorageListTool::new(gateway_url, team_id)));
     }
 
     boxed_registry_from_arcs(tool_arcs)
