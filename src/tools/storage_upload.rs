@@ -7,14 +7,25 @@ pub struct StorageUploadTool {
     workspace_dir: PathBuf,
     gateway_url: String,
     team_id: String,
+    key_prefix: String,
 }
 
 impl StorageUploadTool {
     pub fn new(workspace_dir: PathBuf, gateway_url: String, team_id: String) -> Self {
+        let key_prefix = std::env::var("AGENT_ROLE").unwrap_or_default();
         Self {
             workspace_dir,
             gateway_url,
             team_id,
+            key_prefix,
+        }
+    }
+
+    fn prefixed_key(&self, key: &str) -> String {
+        if self.key_prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}/{}", self.key_prefix, key)
         }
     }
 }
@@ -91,7 +102,7 @@ impl Tool for StorageUploadTool {
             }
         };
 
-        let remote_key = args["remote_key"]
+        let raw_key = args["remote_key"]
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
@@ -101,6 +112,7 @@ impl Tool for StorageUploadTool {
                     .unwrap_or(&local_path)
             })
             .to_string();
+        let remote_key = self.prefixed_key(&raw_key);
 
         // Base64 encode and POST to gateway
         use base64::Engine;
