@@ -2,12 +2,14 @@ pub mod backend;
 pub mod chunker;
 pub mod cli;
 pub mod embeddings;
+pub mod extraction;
 pub mod hygiene;
 pub mod lucid;
 #[cfg(feature = "memory-mariadb")]
 pub mod mariadb;
 pub mod markdown;
 pub mod none;
+pub mod observations;
 #[cfg(feature = "memory-postgres")]
 pub mod postgres;
 pub mod qdrant;

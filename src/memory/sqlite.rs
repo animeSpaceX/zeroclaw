@@ -183,6 +183,9 @@ impl SqliteMemory {
             )?;
         }
 
+        // Initialize observations + session_log tables (additive, idempotent)
+        super::observations::init_observations_schema(conn)?;
+
         Ok(())
     }
 

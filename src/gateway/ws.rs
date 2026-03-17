@@ -301,6 +301,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     // Maintain conversation history for this WebSocket session
     let mut history: Vec<ChatMessage> = Vec::new();
 
+    // Session tracking for intelligent memory extraction
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let mut turn_count: u32 = 0;
+
     // Build system prompt once for the session
     let system_prompt = {
         let config_guard = state.config.lock();
@@ -332,6 +336,20 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             .to_path_buf();
         (enabled, dir)
     };
+
+    // Register session start for observation extraction
+    {
+        let config_guard = state.config.lock();
+        if config_guard.memory.extraction_enabled {
+            if let Ok(obs_conn) = crate::memory::observations::open_observations_db(
+                &config_guard.workspace_dir,
+            ) {
+                let _ = crate::memory::observations::start_session(
+                    &obs_conn, &session_id, "webchat",
+                );
+            }
+        }
+    }
 
     // Subscribe to subagent completion events
     let mut completion_rx = state.event_tx.subscribe();
@@ -385,6 +403,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     {
         // Add user message to history
         history.push(ChatMessage::user(&content));
+        turn_count += 1;
 
         if chat_log_enabled {
             append_chat_log(&chat_log_dir, &json!({
@@ -521,6 +540,69 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
         }
     } // end inner block
     } // end loop
+
+    // ── Session ended — spawn background observation extraction ──
+    {
+        let config_guard = state.config.lock();
+        if config_guard.memory.extraction_enabled && turn_count > 0 {
+            let history_snapshot = history.clone();
+            let workspace_dir = config_guard.workspace_dir.clone();
+            let session_id_clone = session_id.clone();
+            let provider_clone = state.provider.clone();
+            let model = if config_guard.memory.extraction_model.is_empty() {
+                state.model.clone()
+            } else {
+                config_guard.memory.extraction_model.clone()
+            };
+            let temperature = config_guard.memory.extraction_temperature;
+            let min_chars = config_guard.memory.extraction_min_transcript_chars;
+
+            tokio::spawn(async move {
+                match crate::memory::extraction::run_extraction(
+                    &session_id_clone,
+                    &history_snapshot,
+                    provider_clone.as_ref(),
+                    &model,
+                    temperature,
+                    min_chars,
+                    &workspace_dir,
+                )
+                .await
+                {
+                    Ok(count) => {
+                        if count > 0 {
+                            tracing::info!(
+                                session_id = %session_id_clone,
+                                count,
+                                "📝 Extracted observations from session"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            session_id = %session_id_clone,
+                            error = %e,
+                            "observation extraction failed"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
+    // Record session end
+    {
+        let config_guard = state.config.lock();
+        if config_guard.memory.extraction_enabled {
+            if let Ok(obs_conn) = crate::memory::observations::open_observations_db(
+                &config_guard.workspace_dir,
+            ) {
+                let _ = crate::memory::observations::end_session(
+                    &obs_conn, &session_id, turn_count,
+                );
+            }
+        }
+    }
 }
 
 fn extract_ws_bearer_token(headers: &HeaderMap) -> Option<String> {

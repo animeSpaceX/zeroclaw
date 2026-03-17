@@ -2142,6 +2142,26 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub sqlite_open_timeout_secs: Option<u64>,
 
+    // ── Observation Extraction (intelligent memory) ─────────────
+    /// Enable automatic observation extraction after session ends
+    #[serde(default)]
+    pub extraction_enabled: bool,
+    /// LLM model for extraction (empty = use agent default model)
+    #[serde(default)]
+    pub extraction_model: String,
+    /// LLM provider for extraction (empty = use agent default provider)
+    #[serde(default)]
+    pub extraction_provider: String,
+    /// API key for extraction LLM (empty = use agent key)
+    #[serde(default)]
+    pub extraction_api_key: String,
+    /// Temperature for extraction (low = structured output)
+    #[serde(default = "default_extraction_temperature")]
+    pub extraction_temperature: f64,
+    /// Minimum transcript chars to trigger extraction
+    #[serde(default = "default_extraction_min_chars")]
+    pub extraction_min_transcript_chars: usize,
+
     // ── Qdrant backend options ─────────────────────────────────
     /// Configuration for Qdrant vector database backend.
     /// Only used when `backend = "qdrant"`.
@@ -2191,6 +2211,12 @@ fn default_response_cache_ttl() -> u32 {
 fn default_response_cache_max() -> usize {
     5_000
 }
+fn default_extraction_temperature() -> f64 {
+    0.3
+}
+fn default_extraction_min_chars() -> usize {
+    200
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -2216,6 +2242,12 @@ impl Default for MemoryConfig {
             snapshot_on_hygiene: false,
             auto_hydrate: true,
             sqlite_open_timeout_secs: None,
+            extraction_enabled: false,
+            extraction_model: String::new(),
+            extraction_provider: String::new(),
+            extraction_api_key: String::new(),
+            extraction_temperature: default_extraction_temperature(),
+            extraction_min_transcript_chars: default_extraction_min_chars(),
             qdrant: QdrantConfig::default(),
         }
     }

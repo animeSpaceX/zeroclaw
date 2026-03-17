@@ -401,6 +401,12 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         snapshot_on_hygiene: false,
         auto_hydrate: true,
         sqlite_open_timeout_secs: None,
+        extraction_enabled: false,
+        extraction_model: String::new(),
+        extraction_provider: String::new(),
+        extraction_api_key: String::new(),
+        extraction_temperature: 0.3,
+        extraction_min_transcript_chars: 200,
         qdrant: crate::config::QdrantConfig::default(),
     }
 }
