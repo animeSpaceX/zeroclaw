@@ -2162,6 +2162,17 @@ pub struct MemoryConfig {
     #[serde(default = "default_extraction_min_chars")]
     pub extraction_min_transcript_chars: usize,
 
+    // ── Observation Injection (session start context) ─────────
+    /// Max observations to inject into session start context
+    #[serde(default = "default_injection_max_observations")]
+    pub injection_max_observations: usize,
+    /// Look back this many days for observations
+    #[serde(default = "default_injection_lookback_days")]
+    pub injection_lookback_days: u32,
+    /// Max chars for the injected observation context section
+    #[serde(default = "default_injection_max_chars")]
+    pub injection_max_chars: usize,
+
     // ── Qdrant backend options ─────────────────────────────────
     /// Configuration for Qdrant vector database backend.
     /// Only used when `backend = "qdrant"`.
@@ -2217,6 +2228,15 @@ fn default_extraction_temperature() -> f64 {
 fn default_extraction_min_chars() -> usize {
     200
 }
+fn default_injection_max_observations() -> usize {
+    30
+}
+fn default_injection_lookback_days() -> u32 {
+    30
+}
+fn default_injection_max_chars() -> usize {
+    3000
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -2248,6 +2268,9 @@ impl Default for MemoryConfig {
             extraction_api_key: String::new(),
             extraction_temperature: default_extraction_temperature(),
             extraction_min_transcript_chars: default_extraction_min_chars(),
+            injection_max_observations: default_injection_max_observations(),
+            injection_lookback_days: default_injection_lookback_days(),
+            injection_max_chars: default_injection_max_chars(),
             qdrant: QdrantConfig::default(),
         }
     }

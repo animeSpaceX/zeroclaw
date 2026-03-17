@@ -4,6 +4,7 @@ pub mod cli;
 pub mod embeddings;
 pub mod extraction;
 pub mod hygiene;
+pub mod injection;
 pub mod lucid;
 #[cfg(feature = "memory-mariadb")]
 pub mod mariadb;

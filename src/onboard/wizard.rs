@@ -407,6 +407,9 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         extraction_api_key: String::new(),
         extraction_temperature: 0.3,
         extraction_min_transcript_chars: 200,
+        injection_max_observations: 30,
+        injection_lookback_days: 30,
+        injection_max_chars: 3000,
         qdrant: crate::config::QdrantConfig::default(),
     }
 }

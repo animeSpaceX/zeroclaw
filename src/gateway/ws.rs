@@ -306,7 +306,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     let mut turn_count: u32 = 0;
 
     // Build system prompt once for the session
-    let system_prompt = {
+    let mut system_prompt = {
         let config_guard = state.config.lock();
         crate::channels::build_system_prompt(
             &config_guard.workspace_dir,
@@ -317,6 +317,27 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             None,
         )
     };
+
+    // Inject observation context from previous sessions (Phase 2: intelligent memory)
+    {
+        let config_guard = state.config.lock();
+        if config_guard.memory.extraction_enabled {
+            if let Some(obs_context) = crate::memory::injection::build_observation_context(
+                &config_guard.workspace_dir,
+                config_guard.memory.injection_max_observations,
+                config_guard.memory.injection_lookback_days,
+                config_guard.memory.injection_max_chars,
+            ) {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&obs_context);
+                tracing::debug!(
+                    session_id = %session_id,
+                    chars = obs_context.len(),
+                    "🧠 Injected observation context into session"
+                );
+            }
+        }
+    }
 
     // Add system message to history
     history.push(ChatMessage::system(&system_prompt));
