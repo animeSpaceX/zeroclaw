@@ -2184,6 +2184,17 @@ pub struct MemoryConfig {
     #[serde(default = "default_consolidation_temperature")]
     pub consolidation_temperature: f64,
 
+    // ── Observation Decay & Pruning ─────────────────────────────
+    /// Base half-life in days for importance decay (P4 baseline; P1=4x, P2=3x, P3=2x)
+    #[serde(default = "default_importance_half_life_days")]
+    pub importance_half_life_days: u32,
+    /// Hard-delete observations older than this many days regardless of priority
+    #[serde(default = "default_observation_retention_days")]
+    pub observation_retention_days: u32,
+    /// Consolidated observations with decayed importance below this threshold are pruned
+    #[serde(default = "default_importance_prune_threshold")]
+    pub importance_prune_threshold: f64,
+
     // ── Qdrant backend options ─────────────────────────────────
     /// Configuration for Qdrant vector database backend.
     /// Only used when `backend = "qdrant"`.
@@ -2257,6 +2268,15 @@ fn default_consolidation_batch_size() -> usize {
 fn default_consolidation_temperature() -> f64 {
     0.2
 }
+fn default_importance_half_life_days() -> u32 {
+    7
+}
+fn default_observation_retention_days() -> u32 {
+    90
+}
+fn default_importance_prune_threshold() -> f64 {
+    0.05
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -2294,6 +2314,9 @@ impl Default for MemoryConfig {
             consolidation_threshold: default_consolidation_threshold(),
             consolidation_batch_size: default_consolidation_batch_size(),
             consolidation_temperature: default_consolidation_temperature(),
+            importance_half_life_days: default_importance_half_life_days(),
+            observation_retention_days: default_observation_retention_days(),
+            importance_prune_threshold: default_importance_prune_threshold(),
             qdrant: QdrantConfig::default(),
         }
     }

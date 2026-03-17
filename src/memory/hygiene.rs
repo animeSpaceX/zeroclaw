@@ -17,6 +17,8 @@ struct HygieneReport {
     purged_memory_archives: u64,
     purged_session_archives: u64,
     pruned_conversation_rows: u64,
+    #[serde(default)]
+    pruned_observations: u64,
 }
 
 impl HygieneReport {
@@ -26,6 +28,7 @@ impl HygieneReport {
             + self.purged_memory_archives
             + self.purged_session_archives
             + self.pruned_conversation_rows
+            + self.pruned_observations
     }
 }
 
@@ -59,18 +62,25 @@ pub fn run_if_due(config: &MemoryConfig, workspace_dir: &Path) -> Result<()> {
             workspace_dir,
             config.conversation_retention_days,
         )?,
+        pruned_observations: prune_observations(
+            workspace_dir,
+            config.observation_retention_days,
+            config.importance_half_life_days,
+            config.importance_prune_threshold,
+        )?,
     };
 
     write_state(workspace_dir, &report)?;
 
     if report.total_actions() > 0 {
         tracing::info!(
-            "memory hygiene complete: archived_memory={} archived_sessions={} purged_memory={} purged_sessions={} pruned_conversation_rows={}",
+            "memory hygiene complete: archived_memory={} archived_sessions={} purged_memory={} purged_sessions={} pruned_conversations={} pruned_observations={}",
             report.archived_memory_files,
             report.archived_session_files,
             report.purged_memory_archives,
             report.purged_session_archives,
             report.pruned_conversation_rows,
+            report.pruned_observations,
         );
     }
 
@@ -316,6 +326,101 @@ fn prune_conversation_rows(workspace_dir: &Path, retention_days: u32) -> Result<
     )?;
 
     Ok(u64::try_from(affected).unwrap_or(0))
+}
+
+/// Prune observations that are either past hard retention or below decayed importance threshold.
+///
+/// Two independent criteria (either triggers deletion):
+/// 1. **Over-age hard delete**: `created_at < now - observation_retention_days` (regardless of priority)
+/// 2. **Decay threshold**: `consolidated = 1` AND `decayed_importance < prune_threshold`
+fn prune_observations(
+    workspace_dir: &Path,
+    retention_days: u32,
+    half_life_days: u32,
+    prune_threshold: f64,
+) -> Result<u64> {
+    if retention_days == 0 && half_life_days == 0 {
+        return Ok(0);
+    }
+
+    let conn = match crate::memory::observations::open_observations_db(workspace_dir) {
+        Ok(c) => c,
+        Err(_) => return Ok(0),
+    };
+
+    let mut total_pruned = 0_u64;
+
+    // 1. Over-age hard delete
+    if retention_days > 0 {
+        let cutoff = (Utc::now() - Duration::days(i64::from(retention_days))).to_rfc3339();
+        let affected = conn.execute(
+            "DELETE FROM observations WHERE created_at < ?1",
+            params![cutoff],
+        )?;
+        total_pruned += u64::try_from(affected).unwrap_or(0);
+    }
+
+    // 2. Decay threshold pruning (only consolidated observations)
+    if half_life_days > 0 && prune_threshold > 0.0 {
+        let half_life_base = f64::from(half_life_days);
+
+        // Fetch all consolidated observations and check decayed importance
+        let mut stmt = conn.prepare(
+            "SELECT id, priority, importance, created_at FROM observations WHERE consolidated = 1",
+        )?;
+
+        let now = Utc::now();
+        let mut ids_to_delete: Vec<i64> = Vec::new();
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i32>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (id, priority, importance, created_at) = row?;
+            let age = DateTime::parse_from_rfc3339(&created_at)
+                .map(|dt| {
+                    now.signed_duration_since(dt.with_timezone(&Utc))
+                        .num_seconds() as f64
+                        / 86400.0
+                })
+                .unwrap_or(0.0)
+                .max(0.0);
+
+            let decayed = super::injection::decayed_importance(
+                importance,
+                age,
+                priority.clamp(1, 4) as u8,
+                half_life_base,
+            );
+
+            if decayed < prune_threshold {
+                ids_to_delete.push(id);
+            }
+        }
+
+        if !ids_to_delete.is_empty() {
+            for chunk in ids_to_delete.chunks(100) {
+                let placeholders: Vec<String> = chunk.iter().map(|_| "?".to_string()).collect();
+                let sql = format!(
+                    "DELETE FROM observations WHERE id IN ({})",
+                    placeholders.join(",")
+                );
+                let mut delete_stmt = conn.prepare(&sql)?;
+                let params: Vec<&dyn rusqlite::types::ToSql> =
+                    chunk.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+                let affected = delete_stmt.execute(params.as_slice())?;
+                total_pruned += u64::try_from(affected).unwrap_or(0);
+            }
+        }
+    }
+
+    Ok(total_pruned)
 }
 
 fn memory_date_from_filename(filename: &str) -> Option<NaiveDate> {

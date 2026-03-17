@@ -413,6 +413,9 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         consolidation_threshold: 50,
         consolidation_batch_size: 30,
         consolidation_temperature: 0.2,
+        importance_half_life_days: 7,
+        observation_retention_days: 90,
+        importance_prune_threshold: 0.05,
         qdrant: crate::config::QdrantConfig::default(),
     }
 }

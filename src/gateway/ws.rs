@@ -327,6 +327,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                 config_guard.memory.injection_max_observations,
                 config_guard.memory.injection_lookback_days,
                 config_guard.memory.injection_max_chars,
+                config_guard.memory.importance_half_life_days as f64,
             ) {
                 system_prompt.push_str("\n\n");
                 system_prompt.push_str(&obs_context);
