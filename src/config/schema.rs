@@ -2173,6 +2173,17 @@ pub struct MemoryConfig {
     #[serde(default = "default_injection_max_chars")]
     pub injection_max_chars: usize,
 
+    // ── Observation Consolidation ────────────────────────────────
+    /// Minimum unconsolidated observations before triggering consolidation
+    #[serde(default = "default_consolidation_threshold")]
+    pub consolidation_threshold: usize,
+    /// Max observations per consolidation batch
+    #[serde(default = "default_consolidation_batch_size")]
+    pub consolidation_batch_size: usize,
+    /// Temperature for consolidation LLM calls (low = deterministic merging)
+    #[serde(default = "default_consolidation_temperature")]
+    pub consolidation_temperature: f64,
+
     // ── Qdrant backend options ─────────────────────────────────
     /// Configuration for Qdrant vector database backend.
     /// Only used when `backend = "qdrant"`.
@@ -2237,6 +2248,15 @@ fn default_injection_lookback_days() -> u32 {
 fn default_injection_max_chars() -> usize {
     3000
 }
+fn default_consolidation_threshold() -> usize {
+    50
+}
+fn default_consolidation_batch_size() -> usize {
+    30
+}
+fn default_consolidation_temperature() -> f64 {
+    0.2
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -2271,6 +2291,9 @@ impl Default for MemoryConfig {
             injection_max_observations: default_injection_max_observations(),
             injection_lookback_days: default_injection_lookback_days(),
             injection_max_chars: default_injection_max_chars(),
+            consolidation_threshold: default_consolidation_threshold(),
+            consolidation_batch_size: default_consolidation_batch_size(),
+            consolidation_temperature: default_consolidation_temperature(),
             qdrant: QdrantConfig::default(),
         }
     }

@@ -577,6 +577,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             };
             let temperature = config_guard.memory.extraction_temperature;
             let min_chars = config_guard.memory.extraction_min_transcript_chars;
+            let consolidation_threshold = config_guard.memory.consolidation_threshold;
+            let consolidation_batch_size = config_guard.memory.consolidation_batch_size;
+            let consolidation_temp = config_guard.memory.consolidation_temperature;
 
             tokio::spawn(async move {
                 match crate::memory::extraction::run_extraction(
@@ -597,6 +600,20 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                                 count,
                                 "📝 Extracted observations from session"
                             );
+                            // Run consolidation if threshold met
+                            if let Err(e) =
+                                crate::memory::consolidation::run_consolidation_if_needed(
+                                    provider_clone.as_ref(),
+                                    &model,
+                                    consolidation_temp,
+                                    consolidation_threshold,
+                                    consolidation_batch_size,
+                                    &workspace_dir,
+                                )
+                                .await
+                            {
+                                tracing::warn!(error = %e, "observation consolidation failed");
+                            }
                         }
                     }
                     Err(e) => {

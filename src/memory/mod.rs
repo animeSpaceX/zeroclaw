@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod chunker;
 pub mod cli;
+pub mod consolidation;
 pub mod embeddings;
 pub mod extraction;
 pub mod hygiene;

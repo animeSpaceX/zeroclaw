@@ -235,6 +235,50 @@ pub fn count_observations(conn: &Connection) -> anyhow::Result<usize> {
     Ok(count as usize)
 }
 
+// ── Consolidation helpers ────────────────────────────────────────
+
+/// Mark observations as consolidated (processed by the consolidation pipeline).
+pub fn mark_consolidated(conn: &Connection, ids: &[i64]) -> anyhow::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
+    let sql = format!(
+        "UPDATE observations SET consolidated = 1 WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let updated = stmt.execute(params.as_slice())?;
+    Ok(updated)
+}
+
+/// Delete observations by id (used by consolidation to remove duplicates/obsolete entries).
+pub fn delete_observations(conn: &Connection, ids: &[i64]) -> anyhow::Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
+    let sql = format!(
+        "DELETE FROM observations WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let deleted = stmt.execute(params.as_slice())?;
+    Ok(deleted)
+}
+
+/// Count observations that have not yet been processed by consolidation.
+pub fn count_unconsolidated(conn: &Connection) -> anyhow::Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM observations WHERE consolidated = 0",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 // ── Internal helpers ──────────────────────────────────────────────
 
 /// Raw row from SQLite (entities/topics as JSON strings).

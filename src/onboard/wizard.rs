@@ -410,6 +410,9 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         injection_max_observations: 30,
         injection_lookback_days: 30,
         injection_max_chars: 3000,
+        consolidation_threshold: 50,
+        consolidation_batch_size: 30,
+        consolidation_temperature: 0.2,
         qdrant: crate::config::QdrantConfig::default(),
     }
 }
