@@ -274,6 +274,28 @@ pub struct Config {
     /// - `Some(false)`: force vision support off
     #[serde(default)]
     pub model_support_vision: Option<bool>,
+
+    /// Platform gateway connection for skill management (`[platform]`).
+    #[serde(default)]
+    pub platform: PlatformConnectConfig,
+}
+
+/// Platform gateway connection configuration (`[platform]` section).
+/// Enables the skill_manage tool for runtime skill discovery/installation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct PlatformConnectConfig {
+    /// Whether the platform connection is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Platform gateway URL (e.g. "http://127.0.0.1:42600").
+    #[serde(default)]
+    pub gateway_url: Option<String>,
+    /// Team ID this agent belongs to.
+    #[serde(default)]
+    pub team_id: Option<String>,
+    /// Agent role within the team.
+    #[serde(default)]
+    pub agent_role: Option<String>,
 }
 
 /// Named provider profile definition compatible with Codex app-server style config.
@@ -4961,6 +4983,7 @@ impl Default for Config {
             transcription: TranscriptionConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
             model_support_vision: None,
+            platform: PlatformConnectConfig::default(),
         }
     }
 }
@@ -7448,6 +7471,7 @@ default_temperature = 0.7
             transcription: TranscriptionConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
             model_support_vision: None,
+            platform: PlatformConnectConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -7817,6 +7841,7 @@ tool_dispatcher = "xml"
             transcription: TranscriptionConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
             model_support_vision: None,
+            platform: PlatformConnectConfig::default(),
         };
 
         config.save().await.unwrap();

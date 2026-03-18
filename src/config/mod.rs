@@ -13,7 +13,7 @@ pub use schema::{
     HooksConfig, HttpRequestConfig, IMessageConfig, IdentityConfig, LarkConfig, MatrixConfig,
     MemoryConfig, ModelRouteConfig, MultimodalConfig, NextcloudTalkConfig,
     NonCliNaturalLanguageApprovalMode, ObservabilityConfig, OtpConfig, OtpMethod,
-    PeripheralBoardConfig, PeripheralsConfig, ProviderConfig, ProxyConfig, ProxyScope,
+    PeripheralBoardConfig, PeripheralsConfig, PlatformConnectConfig, ProviderConfig, ProxyConfig, ProxyScope,
     QdrantConfig, QueryClassificationConfig, ReliabilityConfig, ResearchPhaseConfig,
     ResearchTrigger, ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig,
     SchedulerConfig, SecretsConfig, SecurityConfig, SkillsConfig, SkillsPromptInjectionMode,

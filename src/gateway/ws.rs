@@ -477,6 +477,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                 &[],            // excluded tools
             ));
 
+            // Slow-response hint: if agent loop produces no deltas for 10s,
+            // send a friendly message to the client.
+            let slow_hint_delay = std::time::Duration::from_secs(10);
+            let mut slow_hint_sent = false;
+            let slow_timer = tokio::time::sleep(slow_hint_delay);
+            tokio::pin!(slow_timer);
+
             loop {
                 tokio::select! {
                     maybe_delta = delta_rx.recv() => {
@@ -495,6 +502,22 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                             }
                         }
                         break response;
+                    }
+                    () = &mut slow_timer, if !slow_hint_sent => {
+                        slow_hint_sent = true;
+                        let hints = [
+                            "最近脑子有点疼，我再想想...",
+                            "思考中，大脑正在全力运转...",
+                            "稍等一下，我正在努力思考...",
+                            "正在深度思考中，请耐心等待...",
+                        ];
+                        let hint = hints[msg_recv_time.elapsed().as_nanos() as usize % hints.len()];
+                        let _ = socket.send(axum::extract::ws::Message::Text(
+                            serde_json::json!({
+                                "type": "slow_hint",
+                                "content": hint,
+                            }).to_string().into()
+                        )).await;
                     }
                 }
             }

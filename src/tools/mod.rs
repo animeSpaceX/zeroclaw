@@ -57,6 +57,7 @@ pub mod schedule;
 pub mod schema;
 pub mod screenshot;
 pub mod shell;
+pub mod skill_manage;
 pub mod storage;
 pub mod storage_download;
 pub mod storage_list;
@@ -113,6 +114,7 @@ pub use schedule::ScheduleTool;
 pub use schema::{CleaningStrategy, SchemaCleanr};
 pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
+pub use skill_manage::SkillManageTool;
 pub use storage::StorageTool;
 pub use storage_download::StorageDownloadTool;
 pub use storage_list::StorageListTool;
@@ -564,6 +566,24 @@ pub fn all_tools_with_runtime(
             gateway_url,
             team_id,
         )));
+    }
+
+    // Platform skill management (active when [platform] config is present)
+    {
+        let platform = &root_config.platform;
+        if platform.enabled {
+            if let (Some(url), Some(tid), Some(role)) = (
+                &platform.gateway_url,
+                &platform.team_id,
+                &platform.agent_role,
+            ) {
+                tool_arcs.push(Arc::new(SkillManageTool::new(
+                    url.clone(),
+                    tid.clone(),
+                    role.clone(),
+                )));
+            }
+        }
     }
 
     boxed_registry_from_arcs(tool_arcs)
