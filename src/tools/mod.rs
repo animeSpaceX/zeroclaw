@@ -67,6 +67,7 @@ pub mod subagent_list;
 pub mod subagent_manage;
 pub mod subagent_registry;
 pub mod subagent_spawn;
+pub mod task_management;
 pub mod task_plan;
 pub mod traits;
 pub mod url_validation;
@@ -123,6 +124,7 @@ pub use storage_upload::StorageUploadTool;
 pub use subagent_list::SubAgentListTool;
 pub use subagent_manage::SubAgentManageTool;
 pub use subagent_registry::SubAgentRegistry;
+pub use task_management::TaskManagementTool;
 pub use subagent_spawn::SubAgentSpawnTool;
 pub use task_plan::TaskPlanTool;
 pub use traits::Tool;
@@ -582,6 +584,7 @@ pub fn all_tools_with_runtime(
                     tid.clone(),
                     role.clone(),
                 )));
+                tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), tid.clone())));
             }
         }
     }
