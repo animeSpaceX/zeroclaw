@@ -407,6 +407,16 @@ impl Provider for OpenAiProvider {
             thinking: None,
         };
 
+        let tools_count = native_request.tools.as_ref().map(|t| t.len()).unwrap_or(0);
+        tracing::info!(
+            target: "openai_debug",
+            base_url = %self.base_url,
+            model = %native_request.model,
+            tools_count = tools_count,
+            messages_count = native_request.messages.len(),
+            "OpenAI chat() request"
+        );
+
         let response = self
             .http_client()
             .post(format!("{}/chat/completions", self.base_url))
@@ -430,6 +440,15 @@ impl Provider for OpenAiProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+
+        tracing::info!(
+            target: "openai_debug",
+            has_tool_calls = message.tool_calls.is_some(),
+            tool_calls_count = message.tool_calls.as_ref().map(|t| t.len()).unwrap_or(0),
+            content_len = message.content.as_ref().map(|c| c.len()).unwrap_or(0),
+            "OpenAI chat() response"
+        );
+
         let mut result = Self::parse_native_response(message);
         result.usage = usage;
         Ok(result)

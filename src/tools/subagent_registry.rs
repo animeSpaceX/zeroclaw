@@ -229,6 +229,16 @@ impl SubAgentRegistry {
             .filter(|s| s.status == SubAgentStatus::Running)
             .count()
     }
+
+    /// Find a running session for the given agent name.
+    /// Returns the session ID if found, used for deduplication.
+    pub fn find_running(&self, agent_name: &str) -> Option<String> {
+        self.sessions
+            .read()
+            .values()
+            .find(|s| s.status == SubAgentStatus::Running && s.agent_name == agent_name)
+            .map(|s| s.id.clone())
+    }
 }
 
 impl Default for SubAgentRegistry {

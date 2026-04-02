@@ -412,8 +412,10 @@ fn prune_observations(
                     placeholders.join(",")
                 );
                 let mut delete_stmt = conn.prepare(&sql)?;
-                let params: Vec<&dyn rusqlite::types::ToSql> =
-                    chunk.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+                let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+                    .iter()
+                    .map(|id| id as &dyn rusqlite::types::ToSql)
+                    .collect();
                 let affected = delete_stmt.execute(params.as_slice())?;
                 total_pruned += u64::try_from(affected).unwrap_or(0);
             }

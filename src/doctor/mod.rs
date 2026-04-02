@@ -1292,11 +1292,15 @@ mod tests {
                 model: "model-z".into(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         config.agents.insert(
@@ -1306,11 +1310,15 @@ mod tests {
                 model: "model-a".into(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
 

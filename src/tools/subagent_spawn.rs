@@ -6,6 +6,7 @@
 
 use super::subagent_registry::{SubAgentRegistry, SubAgentSession, SubAgentStatus};
 use super::traits::{Tool, ToolResult};
+use crate::agent::loop_::{DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL};
 use crate::config::DelegateAgentConfig;
 use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::providers::{self, ChatMessage, Provider};
@@ -17,7 +18,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use crate::agent::loop_::{DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL};
 use tracing::{debug, error, info, warn};
 
 /// Default timeout for background sub-agent provider calls.
@@ -31,11 +31,14 @@ const MAX_CONCURRENT_SUBAGENTS: usize = 10;
 pub struct SubAgentSpawnTool {
     agents: Arc<HashMap<String, DelegateAgentConfig>>,
     security: Arc<SecurityPolicy>,
+    #[allow(dead_code)]
     fallback_credential: Option<String>,
     provider_runtime_options: providers::ProviderRuntimeOptions,
     registry: Arc<SubAgentRegistry>,
     parent_tools: Arc<Vec<Arc<dyn Tool>>>,
     multimodal_config: crate::config::MultimodalConfig,
+    /// Parent agent's workspace directory, used to resolve sub-agent workspace paths.
+    parent_workspace: std::path::PathBuf,
     /// Optional broadcast channel to notify WebSocket sessions when a subagent completes.
     completion_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 }
@@ -50,6 +53,7 @@ impl SubAgentSpawnTool {
         registry: Arc<SubAgentRegistry>,
         parent_tools: Arc<Vec<Arc<dyn Tool>>>,
         multimodal_config: crate::config::MultimodalConfig,
+        parent_workspace: std::path::PathBuf,
     ) -> Self {
         Self {
             agents: Arc::new(agents),
@@ -59,6 +63,7 @@ impl SubAgentSpawnTool {
             registry,
             parent_tools,
             multimodal_config,
+            parent_workspace,
             completion_tx: None,
         }
     }
@@ -184,17 +189,20 @@ impl Tool for SubAgentSpawnTool {
             }
         };
 
-        // Create provider for this agent
-        let provider_credential_owned = agent_config
-            .api_key
-            .clone()
-            .or_else(|| self.fallback_credential.clone());
+        // Create provider for this agent.
+        // Only use explicit api_key override from config; otherwise let
+        // resolve_provider_credential() pick up the correct env var
+        // (e.g. DEEPSEEK_API_KEY, ARK_API_KEY) automatically — same as
+        // a normal agent.
         #[allow(clippy::option_as_ref_deref)]
-        let provider_credential = provider_credential_owned.as_ref().map(String::as_str);
+        let provider_credential = agent_config.api_key.as_ref().map(String::as_str);
+        #[allow(clippy::option_as_ref_deref)]
+        let provider_api_url = agent_config.api_url.as_ref().map(String::as_str);
 
-        let provider: Box<dyn Provider> = match providers::create_provider_with_options(
+        let provider: Box<dyn Provider> = match providers::create_provider_with_url_and_options(
             &agent_config.provider,
             provider_credential,
+            provider_api_url,
             &self.provider_runtime_options,
         ) {
             Ok(p) => p,
@@ -225,6 +233,30 @@ impl Tool for SubAgentSpawnTool {
         let is_agentic = agent_config.agentic;
         let parent_tools = self.parent_tools.clone();
         let multimodal_config = self.multimodal_config.clone();
+        let parent_workspace = self.parent_workspace.clone();
+
+        // Dedup: if the same agent is already running with a similar task, return that session
+        // instead of spawning a duplicate. This prevents the LLM from accidentally spawning
+        // the same subagent multiple times in a single turn.
+        if let Some(existing) = self.registry.find_running(agent_name) {
+            info!(
+                target: "subagent",
+                agent = %agent_name,
+                existing_session = %existing,
+                "Dedup: agent already running, returning existing session"
+            );
+            return Ok(ToolResult {
+                success: true,
+                output: json!({
+                    "session_id": existing,
+                    "agent": agent_name,
+                    "status": "already_running",
+                    "message": format!("Agent '{}' is already running. Use subagent_manage to check status.", agent_name)
+                })
+                .to_string(),
+                error: None,
+            });
+        }
 
         // Atomically check concurrent limit and register session to prevent race conditions.
         let session = SubAgentSession {
@@ -275,6 +307,7 @@ impl Tool for SubAgentSpawnTool {
                     &parent_tools,
                     &multimodal_config,
                     completion_tx.clone(),
+                    &parent_workspace,
                 )
                 .await
             } else {
@@ -542,6 +575,7 @@ async fn run_agentic_background(
     parent_tools: &[Arc<dyn Tool>],
     multimodal_config: &crate::config::MultimodalConfig,
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    parent_workspace: &std::path::Path,
 ) -> anyhow::Result<ToolResult> {
     if agent_config.allowed_tools.is_empty() {
         warn!(target: "subagent", agent = %agent_name, "Agentic agent has empty allowed_tools");
@@ -596,7 +630,37 @@ async fn run_agentic_background(
 
     let temperature = agent_config.temperature.unwrap_or(0.7);
     let mut history = Vec::new();
-    if let Some(system_prompt) = agent_config.system_prompt.as_ref() {
+
+    // Build system prompt: either via SystemPromptBuilder (full agent mode)
+    // or from the raw system_prompt string (legacy mode).
+    if agent_config.use_prompt_builder {
+        let sub_workspace = match agent_config.workspace_dir.as_deref() {
+            Some(dir) => parent_workspace.join(dir),
+            None => parent_workspace.to_path_buf(),
+        };
+
+        let skills = if agent_config.skills_enabled {
+            crate::skills::load_skills(&sub_workspace)
+        } else {
+            vec![]
+        };
+
+        let ctx = crate::agent::prompt::PromptContext {
+            workspace_dir: &sub_workspace,
+            model_name: &agent_config.model,
+            tools: &sub_tools,
+            skills: &skills,
+            skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
+            identity_config: None,
+            dispatcher_instructions: "",
+        };
+        let system_prompt = crate::agent::prompt::SystemPromptBuilder::with_defaults()
+            .build(&ctx)
+            .unwrap_or_default();
+        if !system_prompt.trim().is_empty() {
+            history.push(ChatMessage::system(system_prompt));
+        }
+    } else if let Some(system_prompt) = agent_config.system_prompt.as_ref() {
         history.push(ChatMessage::system(system_prompt.clone()));
     }
     history.push(ChatMessage::user(full_prompt.to_string()));
@@ -694,11 +758,15 @@ mod tests {
                 model: "llama3".to_string(),
                 system_prompt: Some("You are a research assistant.".to_string()),
                 api_key: None,
+                api_url: None,
                 temperature: Some(0.3),
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         agents
@@ -716,6 +784,7 @@ mod tests {
             Arc::new(SubAgentRegistry::new()),
             Arc::new(Vec::new()),
             crate::config::MultimodalConfig::default(),
+            std::path::PathBuf::from("/tmp"),
         )
     }
 
@@ -881,6 +950,7 @@ mod tests {
             registry,
             Arc::new(Vec::new()),
             crate::config::MultimodalConfig::default(),
+            std::path::PathBuf::from("/tmp"),
         );
 
         let result = tool

@@ -634,11 +634,15 @@ impl ModelRoutingConfigTool {
                 model: model.clone(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: DEFAULT_AGENT_MAX_DEPTH,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: DEFAULT_AGENT_MAX_ITERATIONS,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             });
 
         next_agent.provider = provider;

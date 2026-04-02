@@ -10,17 +10,28 @@ pub struct StorageTool {
     gateway_url: String,
     team_id: String,
     key_prefix: String,
+    api_key: String,
 }
 
 impl StorageTool {
     pub fn new(workspace_dir: PathBuf, gateway_url: String, team_id: String) -> Self {
         let key_prefix = std::env::var("AGENT_ROLE").unwrap_or_default();
+        let api_key = std::env::var("PLATFORM_API_KEY").unwrap_or_default();
         Self {
             workspace_dir,
             gateway_url,
             team_id,
             key_prefix,
+            api_key,
         }
+    }
+
+    fn client_with_auth(&self) -> reqwest::Client {
+        reqwest::Client::new()
+    }
+
+    fn auth_header(&self) -> (&'static str, &str) {
+        ("X-API-Key", &self.api_key)
     }
 
     /// Prefix the key with agent role directory if AGENT_ROLE is set.
@@ -43,6 +54,7 @@ impl StorageTool {
         let client = reqwest::Client::new();
         let resp = client
             .get(&url)
+            .header("X-API-Key", &self.api_key)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;
@@ -79,7 +91,12 @@ impl StorageTool {
                     let key = obj["key"].as_str().unwrap_or("?");
                     let size = obj["size"].as_u64().unwrap_or(0);
                     let modified = obj["last_modified"].as_str().unwrap_or("");
-                    lines.push(format!("{:<40} {:>10} {}", key, format_size(size), modified));
+                    lines.push(format!(
+                        "{:<40} {:>10} {}",
+                        key,
+                        format_size(size),
+                        modified
+                    ));
                 }
                 lines.push(format!("\nTotal: {} file(s)", objects.len()));
 
@@ -117,6 +134,7 @@ impl StorageTool {
         let client = reqwest::Client::new();
         let resp = client
             .get(&url)
+            .header("X-API-Key", &self.api_key)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;
@@ -205,8 +223,7 @@ impl StorageTool {
     async fn do_write(&self, key: &str, content: &str) -> ToolResult {
         use base64::Engine;
         let key = self.prefixed_key(key);
-        let content_b64 =
-            base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
+        let content_b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
         let content_type = mime_from_key(&key);
         let size = content.len();
 
@@ -218,6 +235,7 @@ impl StorageTool {
         let client = reqwest::Client::new();
         let resp = client
             .post(&url)
+            .header("X-API-Key", &self.api_key)
             .json(&json!({
                 "key": key,
                 "content_base64": content_b64,
@@ -303,6 +321,7 @@ impl StorageTool {
         let client = reqwest::Client::new();
         let resp = client
             .post(&url)
+            .header("X-API-Key", &self.api_key)
             .json(&json!({
                 "key": key,
                 "content_base64": content_b64,
@@ -364,6 +383,7 @@ impl StorageTool {
         let client = reqwest::Client::new();
         let resp = client
             .get(&url)
+            .header("X-API-Key", &self.api_key)
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await;
@@ -432,6 +452,7 @@ impl StorageTool {
         let client = reqwest::Client::new();
         let resp = client
             .delete(&url)
+            .header("X-API-Key", &self.api_key)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;

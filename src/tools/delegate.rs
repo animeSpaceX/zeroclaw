@@ -29,7 +29,8 @@ const COORDINATION_PREVIEW_MAX_CHARS: usize = 240;
 pub struct DelegateTool {
     agents: Arc<HashMap<String, DelegateAgentConfig>>,
     security: Arc<SecurityPolicy>,
-    /// Global credential fallback (from config.api_key)
+    /// Global credential fallback (from config.api_key) — kept for API compat.
+    #[allow(dead_code)]
     fallback_credential: Option<String>,
     /// Provider runtime options inherited from root config.
     provider_runtime_options: providers::ProviderRuntimeOptions,
@@ -43,6 +44,8 @@ pub struct DelegateTool {
     coordination_bus: Option<InMemoryMessageBus>,
     /// Logical lead agent identity used in coordination trace events.
     coordination_lead_agent: String,
+    /// Parent agent's workspace directory for resolving sub-agent workspace paths.
+    parent_workspace: std::path::PathBuf,
 }
 
 impl DelegateTool {
@@ -76,6 +79,7 @@ impl DelegateTool {
             multimodal_config: crate::config::MultimodalConfig::default(),
             coordination_bus,
             coordination_lead_agent: DEFAULT_COORDINATION_LEAD_AGENT.to_string(),
+            parent_workspace: std::path::PathBuf::new(),
         }
     }
 
@@ -115,12 +119,19 @@ impl DelegateTool {
             multimodal_config: crate::config::MultimodalConfig::default(),
             coordination_bus,
             coordination_lead_agent: DEFAULT_COORDINATION_LEAD_AGENT.to_string(),
+            parent_workspace: std::path::PathBuf::new(),
         }
     }
 
     /// Attach parent tools used to build sub-agent allowlist registries.
     pub fn with_parent_tools(mut self, parent_tools: Arc<Vec<Arc<dyn Tool>>>) -> Self {
         self.parent_tools = parent_tools;
+        self
+    }
+
+    /// Set the parent workspace directory for resolving sub-agent workspace paths.
+    pub fn with_parent_workspace(mut self, workspace: std::path::PathBuf) -> Self {
+        self.parent_workspace = workspace;
         self
     }
 
@@ -296,13 +307,11 @@ impl Tool for DelegateTool {
         let coordination_trace =
             self.start_coordination_trace(agent_name, prompt, context, agent_config);
 
-        // Create provider for this agent
-        let provider_credential_owned = agent_config
-            .api_key
-            .clone()
-            .or_else(|| self.fallback_credential.clone());
+        // Create provider for this agent.
+        // Only use explicit api_key override; otherwise let
+        // resolve_provider_credential() pick up the correct env var automatically.
         #[allow(clippy::option_as_ref_deref)]
-        let provider_credential = provider_credential_owned.as_ref().map(String::as_str);
+        let provider_credential = agent_config.api_key.as_ref().map(String::as_str);
 
         let provider: Box<dyn Provider> = match providers::create_provider_with_options(
             &agent_config.provider,
@@ -482,7 +491,37 @@ impl DelegateTool {
         }
 
         let mut history = Vec::new();
-        if let Some(system_prompt) = agent_config.system_prompt.as_ref() {
+
+        // Build system prompt: either via SystemPromptBuilder (full agent mode)
+        // or from the raw system_prompt string (legacy mode).
+        if agent_config.use_prompt_builder {
+            let sub_workspace = match agent_config.workspace_dir.as_deref() {
+                Some(dir) => self.parent_workspace.join(dir),
+                None => self.parent_workspace.clone(),
+            };
+
+            let skills = if agent_config.skills_enabled {
+                crate::skills::load_skills(&sub_workspace)
+            } else {
+                vec![]
+            };
+
+            let ctx = crate::agent::prompt::PromptContext {
+                workspace_dir: &sub_workspace,
+                model_name: &agent_config.model,
+                tools: &sub_tools,
+                skills: &skills,
+                skills_prompt_mode: crate::config::SkillsPromptInjectionMode::Full,
+                identity_config: None,
+                dispatcher_instructions: "",
+            };
+            let system_prompt = crate::agent::prompt::SystemPromptBuilder::with_defaults()
+                .build(&ctx)
+                .unwrap_or_default();
+            if !system_prompt.trim().is_empty() {
+                history.push(ChatMessage::system(system_prompt));
+            }
+        } else if let Some(system_prompt) = agent_config.system_prompt.as_ref() {
             history.push(ChatMessage::system(system_prompt.clone()));
         }
         history.push(ChatMessage::user(full_prompt.to_string()));
@@ -792,11 +831,15 @@ mod tests {
                 model: "llama3".to_string(),
                 system_prompt: Some("You are a research assistant.".to_string()),
                 api_key: None,
+                api_url: None,
                 temperature: Some(0.3),
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         agents.insert(
@@ -806,11 +849,15 @@ mod tests {
                 model: "anthropic/claude-sonnet-4-20250514".to_string(),
                 system_prompt: None,
                 api_key: Some("delegate-test-credential".to_string()),
+                api_url: None,
                 temperature: None,
                 max_depth: 2,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         agents
@@ -959,11 +1006,15 @@ mod tests {
             model: "model-test".to_string(),
             system_prompt: Some("You are agentic.".to_string()),
             api_key: Some("delegate-test-credential".to_string()),
+            api_url: None,
             temperature: Some(0.2),
             max_depth: 3,
             agentic: true,
             allowed_tools,
             max_iterations,
+            workspace_dir: None,
+            use_prompt_builder: false,
+            skills_enabled: false,
         }
     }
 
@@ -1067,11 +1118,15 @@ mod tests {
                 model: "model".to_string(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1173,11 +1228,15 @@ mod tests {
                 model: "test-model".to_string(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1208,11 +1267,15 @@ mod tests {
                 model: "test-model".to_string(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1388,11 +1451,15 @@ mod tests {
                 model: "model".to_string(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
 
@@ -1457,11 +1524,15 @@ mod tests {
                 model: "model-test".to_string(),
                 system_prompt: None,
                 api_key: Some("delegate-test-credential".to_string()),
+                api_url: None,
                 temperature: Some(0.2),
                 max_depth: 2,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());

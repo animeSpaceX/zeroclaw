@@ -252,7 +252,7 @@ pub fn default_injection_max_chars() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::observations::{NewObservation, store_observation};
+    use crate::memory::observations::{store_observation, NewObservation};
     use tempfile::TempDir;
 
     fn setup_with_observations() -> (TempDir, rusqlite::Connection) {
@@ -386,13 +386,16 @@ mod tests {
         assert!((decayed_importance(1.0, 28.0, 1, base) - 0.5).abs() < 1e-9); // P1: 7*4=28
         assert!((decayed_importance(1.0, 21.0, 2, base) - 0.5).abs() < 1e-9); // P2: 7*3=21
         assert!((decayed_importance(1.0, 14.0, 3, base) - 0.5).abs() < 1e-9); // P3: 7*2=14
-        assert!((decayed_importance(1.0, 7.0, 4, base) - 0.5).abs() < 1e-9);  // P4: 7*1=7
+        assert!((decayed_importance(1.0, 7.0, 4, base) - 0.5).abs() < 1e-9); // P4: 7*1=7
     }
 
     #[test]
     fn decayed_importance_disabled_when_zero_half_life() {
         let result = decayed_importance(0.9, 100.0, 4, 0.0);
-        assert!((result - 0.9).abs() < 1e-9, "decay should be disabled when half_life_base=0");
+        assert!(
+            (result - 0.9).abs() < 1e-9,
+            "decay should be disabled when half_life_base=0"
+        );
     }
 
     #[test]
@@ -422,8 +425,10 @@ mod tests {
 
         // With decay (half_life=7): 60 days old P4 → 0.9 * 0.5^(60/7) ≈ 0.0013, recent 0.5 stays ~0.5
         let with_decay = query_recent_observations(&conn, 10, 90, 7.0).unwrap();
-        assert_eq!(with_decay[0].content, "Recent less important thing",
-            "Recent observation should rank higher after decay");
+        assert_eq!(
+            with_decay[0].content, "Recent less important thing",
+            "Recent observation should rank higher after decay"
+        );
     }
 
     #[test]

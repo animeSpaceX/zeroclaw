@@ -385,7 +385,8 @@ mod tests {
 
     #[test]
     fn parse_consolidation_response_handles_extra_text() {
-        let json = "Here is my analysis:\n{\"keep\": [1, 2], \"delete\": [3], \"merge\": []}\nDone!";
+        let json =
+            "Here is my analysis:\n{\"keep\": [1, 2], \"delete\": [3], \"merge\": []}\nDone!";
         let plan = parse_consolidation_response(json).unwrap();
         assert_eq!(plan.keep, vec![1, 2]);
         assert_eq!(plan.delete, vec![3]);

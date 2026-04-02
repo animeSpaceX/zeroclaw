@@ -42,12 +42,13 @@ fn append_chat_log(config_dir: &Path, entry: &serde_json::Value) {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum WsDeltaEvent {
     ContentChunk(String),
     ToolCall {
         name: String,
         hint: Option<String>,
+        full_args: Option<serde_json::Value>,
     },
     ToolResult {
         name: String,
@@ -162,6 +163,16 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
             if rest.is_empty() {
                 return None;
             }
+            // ask_user sends complete JSON args after "ask_user::"
+            if let Some(full_json) = rest.strip_prefix("ask_user::") {
+                if let Ok(args) = serde_json::from_str(full_json.trim()) {
+                    return Some(WsDeltaEvent::ToolCall {
+                        name: "ask_user".to_string(),
+                        hint: None,
+                        full_args: Some(args),
+                    });
+                }
+            }
             let (name, hint) = match rest.split_once(": ") {
                 Some((name, hint)) => {
                     let hint = hint.trim();
@@ -176,7 +187,11 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
                 }
                 None => (rest.to_string(), None),
             };
-            return Some(WsDeltaEvent::ToolCall { name, hint });
+            return Some(WsDeltaEvent::ToolCall {
+                name,
+                hint,
+                full_args: None,
+            });
         }
 
         if let Some(rest) = progress.strip_prefix("✅ ") {
@@ -215,13 +230,21 @@ async fn emit_ws_delta_event(socket: &mut WebSocket, event: WsDeltaEvent) {
             "type": "chunk",
             "content": content,
         }),
-        WsDeltaEvent::ToolCall { name, hint } => json!({
-            "type": "tool_call",
-            "name": name,
-            "args": {
-                "hint": hint,
-            },
-        }),
+        WsDeltaEvent::ToolCall {
+            name,
+            hint,
+            full_args,
+        } => {
+            let args = match full_args {
+                Some(fa) => fa,
+                None => json!({ "hint": hint }),
+            };
+            json!({
+                "type": "tool_call",
+                "name": name,
+                "args": args,
+            })
+        }
         WsDeltaEvent::ToolResult {
             name,
             success,
@@ -363,12 +386,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     {
         let config_guard = state.config.lock();
         if config_guard.memory.extraction_enabled {
-            if let Ok(obs_conn) = crate::memory::observations::open_observations_db(
-                &config_guard.workspace_dir,
-            ) {
-                let _ = crate::memory::observations::start_session(
-                    &obs_conn, &session_id, "webchat",
-                );
+            if let Ok(obs_conn) =
+                crate::memory::observations::open_observations_db(&config_guard.workspace_dir)
+            {
+                let _ =
+                    crate::memory::observations::start_session(&obs_conn, &session_id, "webchat");
             }
         }
     }
@@ -377,213 +399,225 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     let mut completion_rx = state.event_tx.subscribe();
 
     loop {
-    // Use select! to listen for both incoming WS messages and subagent completions.
-    // Both sources produce a `content: String` that gets fed into the agent loop.
-    let content: String = tokio::select! {
-        ws_msg = socket.recv() => {
-            match ws_msg {
-                Some(Ok(Message::Text(text))) => {
-                    let parsed: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(_) => {
-                            let err = serde_json::json!({"type": "error", "message": "Invalid JSON"});
-                            let _ = socket.send(Message::Text(err.to_string().into())).await;
-                            continue;
-                        }
-                    };
-                    let msg_type = parsed["type"].as_str().unwrap_or("");
-                    if msg_type != "message" { continue; }
-                    let c = parsed["content"].as_str().unwrap_or("").to_string();
-                    if c.is_empty() { continue; }
-                    c
-                }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                _ => continue,
-            }
-        }
-        completion = completion_rx.recv() => {
-            if let Ok(event) = completion {
-                match event.get("type").and_then(|v| v.as_str()) {
-                    Some("subagent_completed") => {
-                        // Forward event to frontend
-                        let _ = socket.send(Message::Text(event.to_string().into())).await;
-                        // Build notification and feed into agent loop
-                        build_subagent_notification(&event)
+        // Use select! to listen for both incoming WS messages and subagent completions.
+        // Both sources produce a `content: String` that gets fed into the agent loop.
+        let content: String = tokio::select! {
+            ws_msg = socket.recv() => {
+                match ws_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        let parsed: serde_json::Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                let err = serde_json::json!({"type": "error", "message": "Invalid JSON"});
+                                let _ = socket.send(Message::Text(err.to_string().into())).await;
+                                continue;
+                            }
+                        };
+                        let msg_type = parsed["type"].as_str().unwrap_or("");
+                        if msg_type != "message" { continue; }
+                        let c = parsed["content"].as_str().unwrap_or("").to_string();
+                        if c.is_empty() { continue; }
+                        c
                     }
-                    Some("subagent_tool_call" | "subagent_tool_result") => {
-                        let _ = socket.send(Message::Text(event.to_string().into())).await;
-                        continue;
-                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
                     _ => continue,
                 }
-            } else {
-                continue;
             }
-        }
-    };
-
-    {
-        // Add user message to history
-        history.push(ChatMessage::user(&content));
-        turn_count += 1;
-
-        if chat_log_enabled {
-            append_chat_log(&chat_log_dir, &json!({
-                "ts": chrono::Utc::now().to_rfc3339(),
-                "role": "user",
-                "content": content,
-            }));
-        }
-
-        let msg_recv_time = std::time::Instant::now();
-        tracing::info!(target: "ws_timing", peer = %peer_addr, content_len = content.len(), "📥 WS message received");
-
-        // Get provider info
-        let provider_label = state
-            .config
-            .lock()
-            .default_provider
-            .clone()
-            .unwrap_or_else(|| "unknown".to_string());
-
-        // Broadcast agent_start event
-        let _ = state.event_tx.send(serde_json::json!({
-            "type": "agent_start",
-            "provider": provider_label,
-            "model": state.model,
-        }));
-
-        // Run the agent loop with real-time delta streaming for web clients.
-        tracing::info!(target: "ws_timing", provider = %provider_label, model = %state.model, history_len = history.len(), "🚀 Starting agent loop");
-
-        let result = {
-            let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(128);
-            let mut loop_future = std::pin::pin!(run_tool_call_loop(
-                state.provider.as_ref(),
-                &mut history,
-                state.tools_registry_exec.as_ref(),
-                state.observer.as_ref(),
-                &provider_label,
-                &state.model,
-                state.temperature,
-                true, // silent - no console output
-                Some(&approval_manager),
-                "webchat",
-                &state.multimodal,
-                state.max_tool_iterations,
-                None,           // cancellation token
-                Some(delta_tx), // delta streaming
-                None,           // hooks
-                &[],            // excluded tools
-            ));
-
-            // Slow-response hint: if agent loop produces no deltas for 10s,
-            // send a friendly message to the client.
-            let slow_hint_delay = std::time::Duration::from_secs(10);
-            let mut slow_hint_sent = false;
-            let slow_timer = tokio::time::sleep(slow_hint_delay);
-            tokio::pin!(slow_timer);
-
-            loop {
-                tokio::select! {
-                    maybe_delta = delta_rx.recv() => {
-                        if let Some(delta) = maybe_delta {
-                            if let Some(event) = parse_ws_delta_event(&delta) {
-                                emit_ws_delta_event(&mut socket, event).await;
-                            }
-                        } else {
-                            break loop_future.await;
+            completion = completion_rx.recv() => {
+                if let Ok(event) = completion {
+                    match event.get("type").and_then(|v| v.as_str()) {
+                        Some("subagent_completed") => {
+                            // Forward event to frontend
+                            let _ = socket.send(Message::Text(event.to_string().into())).await;
+                            // Build notification and feed into agent loop
+                            build_subagent_notification(&event)
                         }
-                    }
-                    response = &mut loop_future => {
-                        while let Ok(delta) = delta_rx.try_recv() {
-                            if let Some(event) = parse_ws_delta_event(&delta) {
-                                emit_ws_delta_event(&mut socket, event).await;
-                            }
+                        Some("subagent_tool_call" | "subagent_tool_result") => {
+                            let _ = socket.send(Message::Text(event.to_string().into())).await;
+                            continue;
                         }
-                        break response;
+                        _ => continue,
                     }
-                    () = &mut slow_timer, if !slow_hint_sent => {
-                        slow_hint_sent = true;
-                        let hints = [
-                            "最近脑子有点疼，我再想想...",
-                            "思考中，大脑正在全力运转...",
-                            "稍等一下，我正在努力思考...",
-                            "正在深度思考中，请耐心等待...",
-                        ];
-                        let hint = hints[msg_recv_time.elapsed().as_nanos() as usize % hints.len()];
-                        let _ = socket.send(axum::extract::ws::Message::Text(
-                            serde_json::json!({
-                                "type": "slow_hint",
-                                "content": hint,
-                            }).to_string().into()
-                        )).await;
-                    }
+                } else {
+                    continue;
                 }
             }
         };
 
-        let elapsed_ms = msg_recv_time.elapsed().as_millis();
-        tracing::info!(target: "ws_timing", elapsed_ms = elapsed_ms, result = matches!(result, Ok(_)), "✅ Agent loop completed");
+        {
+            // Add user message to history
+            history.push(ChatMessage::user(&content));
+            turn_count += 1;
 
-        match result {
-            Ok(response) => {
-                let safe_response =
-                    finalize_ws_response(&response, &history, state.tools_registry_exec.as_ref());
-                // Add assistant response to history
-                history.push(ChatMessage::assistant(&safe_response));
-
-                if chat_log_enabled {
-                    append_chat_log(&chat_log_dir, &json!({
+            if chat_log_enabled {
+                append_chat_log(
+                    &chat_log_dir,
+                    &json!({
                         "ts": chrono::Utc::now().to_rfc3339(),
-                        "role": "assistant",
-                        "content": safe_response,
-                        "elapsed_ms": elapsed_ms,
-                        "model": &state.model,
+                        "role": "user",
+                        "content": content,
+                    }),
+                );
+            }
+
+            let msg_recv_time = std::time::Instant::now();
+            tracing::info!(target: "ws_timing", peer = %peer_addr, content_len = content.len(), "📥 WS message received");
+
+            // Get provider info
+            let provider_label = state
+                .config
+                .lock()
+                .default_provider
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+
+            // Broadcast agent_start event
+            let _ = state.event_tx.send(serde_json::json!({
+                "type": "agent_start",
+                "provider": provider_label,
+                "model": state.model,
+            }));
+
+            // Run the agent loop with real-time delta streaming for web clients.
+            tracing::info!(target: "ws_timing", provider = %provider_label, model = %state.model, history_len = history.len(), "🚀 Starting agent loop");
+
+            let result = {
+                let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(128);
+                let mut loop_future = std::pin::pin!(run_tool_call_loop(
+                    state.provider.as_ref(),
+                    &mut history,
+                    state.tools_registry_exec.as_ref(),
+                    state.observer.as_ref(),
+                    &provider_label,
+                    &state.model,
+                    state.temperature,
+                    true, // silent - no console output
+                    Some(&approval_manager),
+                    "webchat",
+                    &state.multimodal,
+                    state.max_tool_iterations,
+                    None,           // cancellation token
+                    Some(delta_tx), // delta streaming
+                    None,           // hooks
+                    &[],            // excluded tools
+                ));
+
+                // Slow-response hint: if agent loop produces no deltas for 10s,
+                // send a friendly message to the client.
+                let slow_hint_delay = std::time::Duration::from_secs(10);
+                let mut slow_hint_sent = false;
+                let slow_timer = tokio::time::sleep(slow_hint_delay);
+                tokio::pin!(slow_timer);
+
+                loop {
+                    tokio::select! {
+                        maybe_delta = delta_rx.recv() => {
+                            if let Some(delta) = maybe_delta {
+                                if let Some(event) = parse_ws_delta_event(&delta) {
+                                    emit_ws_delta_event(&mut socket, event).await;
+                                }
+                            } else {
+                                break loop_future.await;
+                            }
+                        }
+                        response = &mut loop_future => {
+                            while let Ok(delta) = delta_rx.try_recv() {
+                                if let Some(event) = parse_ws_delta_event(&delta) {
+                                    emit_ws_delta_event(&mut socket, event).await;
+                                }
+                            }
+                            break response;
+                        }
+                        () = &mut slow_timer, if !slow_hint_sent => {
+                            slow_hint_sent = true;
+                            let hints = [
+                                "最近脑子有点疼，我再想想...",
+                                "思考中，大脑正在全力运转...",
+                                "稍等一下，我正在努力思考...",
+                                "正在深度思考中，请耐心等待...",
+                            ];
+                            let hint = hints[msg_recv_time.elapsed().as_nanos() as usize % hints.len()];
+                            let _ = socket.send(axum::extract::ws::Message::Text(
+                                serde_json::json!({
+                                    "type": "slow_hint",
+                                    "content": hint,
+                                }).to_string().into()
+                            )).await;
+                        }
+                    }
+                }
+            };
+
+            let elapsed_ms = msg_recv_time.elapsed().as_millis();
+            tracing::info!(target: "ws_timing", elapsed_ms = elapsed_ms, result = matches!(result, Ok(_)), "✅ Agent loop completed");
+
+            match result {
+                Ok(response) => {
+                    let safe_response = finalize_ws_response(
+                        &response,
+                        &history,
+                        state.tools_registry_exec.as_ref(),
+                    );
+                    // Add assistant response to history
+                    history.push(ChatMessage::assistant(&safe_response));
+
+                    if chat_log_enabled {
+                        append_chat_log(
+                            &chat_log_dir,
+                            &json!({
+                                "ts": chrono::Utc::now().to_rfc3339(),
+                                "role": "assistant",
+                                "content": safe_response,
+                                "elapsed_ms": elapsed_ms,
+                                "model": &state.model,
+                            }),
+                        );
+                    }
+
+                    // Send the full response as a done message
+                    let done = serde_json::json!({
+                        "type": "done",
+                        "full_response": safe_response,
+                    });
+                    let _ = socket.send(Message::Text(done.to_string().into())).await;
+
+                    // Broadcast agent_end event
+                    let _ = state.event_tx.send(serde_json::json!({
+                        "type": "agent_end",
+                        "provider": provider_label,
+                        "model": state.model,
                     }));
                 }
+                Err(e) => {
+                    let sanitized = crate::providers::sanitize_api_error(&e.to_string());
 
-                // Send the full response as a done message
-                let done = serde_json::json!({
-                    "type": "done",
-                    "full_response": safe_response,
-                });
-                let _ = socket.send(Message::Text(done.to_string().into())).await;
+                    if chat_log_enabled {
+                        append_chat_log(
+                            &chat_log_dir,
+                            &json!({
+                                "ts": chrono::Utc::now().to_rfc3339(),
+                                "role": "error",
+                                "content": sanitized,
+                                "elapsed_ms": elapsed_ms,
+                            }),
+                        );
+                    }
 
-                // Broadcast agent_end event
-                let _ = state.event_tx.send(serde_json::json!({
-                    "type": "agent_end",
-                    "provider": provider_label,
-                    "model": state.model,
-                }));
-            }
-            Err(e) => {
-                let sanitized = crate::providers::sanitize_api_error(&e.to_string());
+                    let err = serde_json::json!({
+                        "type": "error",
+                        "message": sanitized,
+                    });
+                    let _ = socket.send(Message::Text(err.to_string().into())).await;
 
-                if chat_log_enabled {
-                    append_chat_log(&chat_log_dir, &json!({
-                        "ts": chrono::Utc::now().to_rfc3339(),
-                        "role": "error",
-                        "content": sanitized,
-                        "elapsed_ms": elapsed_ms,
+                    // Broadcast error event
+                    let _ = state.event_tx.send(serde_json::json!({
+                        "type": "error",
+                        "component": "ws_chat",
+                        "message": sanitized,
                     }));
                 }
-
-                let err = serde_json::json!({
-                    "type": "error",
-                    "message": sanitized,
-                });
-                let _ = socket.send(Message::Text(err.to_string().into())).await;
-
-                // Broadcast error event
-                let _ = state.event_tx.send(serde_json::json!({
-                    "type": "error",
-                    "component": "ws_chat",
-                    "message": sanitized,
-                }));
             }
-        }
-    } // end inner block
+        } // end inner block
     } // end loop
 
     // ── Session ended — spawn background observation extraction ──
@@ -656,12 +690,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     {
         let config_guard = state.config.lock();
         if config_guard.memory.extraction_enabled {
-            if let Ok(obs_conn) = crate::memory::observations::open_observations_db(
-                &config_guard.workspace_dir,
-            ) {
-                let _ = crate::memory::observations::end_session(
-                    &obs_conn, &session_id, turn_count,
-                );
+            if let Ok(obs_conn) =
+                crate::memory::observations::open_observations_db(&config_guard.workspace_dir)
+            {
+                let _ =
+                    crate::memory::observations::end_session(&obs_conn, &session_id, turn_count);
             }
         }
     }

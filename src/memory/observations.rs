@@ -46,8 +46,7 @@ pub fn open_observations_db(workspace_dir: &Path) -> anyhow::Result<Connection> 
         std::fs::create_dir_all(parent)?;
     }
 
-    let conn =
-        Connection::open(&db_path).context("Failed to open brain.db for observations")?;
+    let conn = Connection::open(&db_path).context("Failed to open brain.db for observations")?;
 
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -248,7 +247,8 @@ pub fn mark_consolidated(conn: &Connection, ids: &[i64]) -> anyhow::Result<usize
         placeholders.join(", ")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
     let updated = stmt.execute(params.as_slice())?;
     Ok(updated)
 }
@@ -264,7 +264,8 @@ pub fn delete_observations(conn: &Connection, ids: &[i64]) -> anyhow::Result<usi
         placeholders.join(", ")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
     let deleted = stmt.execute(params.as_slice())?;
     Ok(deleted)
 }
@@ -428,7 +429,7 @@ mod tests {
             content: "test clamping".into(),
             entities: vec![],
             topics: vec![],
-            priority: 10, // should clamp to 4
+            priority: 10,    // should clamp to 4
             importance: 2.0, // should clamp to 1.0
             source_file: None,
         };

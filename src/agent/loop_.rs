@@ -582,12 +582,8 @@ async fn consume_provider_streaming_response(
             StreamEvent::ToolCall(tool_call) => {
                 outcome.tool_calls.push(tool_call);
                 suppress_forwarding = true;
-                if outcome.forwarded_live_deltas {
-                    if let Some(tx) = delta_sender {
-                        let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
-                    }
-                    outcome.forwarded_live_deltas = false;
-                }
+                // Keep already-forwarded text visible to the user (e.g. "好的，我来帮你做")
+                // instead of clearing it with DRAFT_CLEAR_SENTINEL.
             }
             StreamEvent::TextDelta(chunk) => {
                 if chunk.delta.is_empty() {
@@ -608,12 +604,8 @@ async fn consume_provider_streaming_response(
 
                 if !suppress_forwarding && looks_like_streamed_tool_payload(&marker_window) {
                     suppress_forwarding = true;
-                    if outcome.forwarded_live_deltas {
-                        if let Some(tx) = delta_sender {
-                            let _ = tx.send(DRAFT_CLEAR_SENTINEL.to_string()).await;
-                        }
-                        outcome.forwarded_live_deltas = false;
-                    }
+                    // Keep already-forwarded text visible; only suppress future deltas
+                    // that are part of the tool call payload.
                 }
 
                 if suppress_forwarding {
@@ -832,6 +824,16 @@ pub(crate) async fn run_tool_call_loop(
         .map(|tool| tool.spec())
         .collect();
     let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
+    tracing::info!(
+        target: "tool_loop_debug",
+        provider_name = %provider_name,
+        model = %model,
+        tool_specs_count = tool_specs.len(),
+        supports_native_tools = provider.supports_native_tools(),
+        use_native_tools = use_native_tools,
+        channel = %channel_name,
+        "run_tool_call_loop entry"
+    );
     let turn_id = Uuid::new_v4().to_string();
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut missing_tool_call_retry_used = false;
@@ -1523,11 +1525,16 @@ pub(crate) async fn run_tool_call_loop(
 
             // ── Progress: tool start ────────────────────────────
             if let Some(ref tx) = on_delta {
-                let hint = truncate_tool_args_for_progress(&tool_name, &tool_args, 60);
-                let progress = if hint.is_empty() {
-                    format!("\u{23f3} {}\n", tool_name)
+                let progress = if tool_name == "ask_user" {
+                    // Send complete args so the frontend can render the question UI
+                    format!("\u{23f3} ask_user::{}\n", tool_args)
                 } else {
-                    format!("\u{23f3} {}: {hint}\n", tool_name)
+                    let hint = truncate_tool_args_for_progress(&tool_name, &tool_args, 60);
+                    if hint.is_empty() {
+                        format!("\u{23f3} {}\n", tool_name)
+                    } else {
+                        format!("\u{23f3} {}: {hint}\n", tool_name)
+                    }
                 };
                 tracing::debug!(tool = %tool_name, "Sending progress start to draft");
                 let _ = tx
@@ -1544,10 +1551,10 @@ pub(crate) async fn run_tool_call_loop(
         }
 
         // DEBUG: Log tool execution start
-            let _tool_exec_start = std::time::Instant::now();
-            tracing::debug!(target: "tool_timing", tool_count = executable_calls.len(), parallel = allow_parallel_execution, "🔧 Executing tools");
+        let _tool_exec_start = std::time::Instant::now();
+        tracing::debug!(target: "tool_timing", tool_count = executable_calls.len(), parallel = allow_parallel_execution, "🔧 Executing tools");
 
-            let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
+        let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
             execute_tools_parallel(
                 &executable_calls,
                 tools_registry,
@@ -1566,7 +1573,7 @@ pub(crate) async fn run_tool_call_loop(
         };
 
         let _tool_exec_duration = _tool_exec_start.elapsed();
-            tracing::debug!(target: "tool_timing", duration_ms = _tool_exec_duration.as_millis(), tool_count = executable_calls.len(), "✅ Tool execution completed");
+        tracing::debug!(target: "tool_timing", duration_ms = _tool_exec_duration.as_millis(), tool_count = executable_calls.len(), "✅ Tool execution completed");
 
         for ((idx, call), outcome) in executable_indices
             .iter()

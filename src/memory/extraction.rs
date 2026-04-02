@@ -87,7 +87,10 @@ fn summarize_history(history: &[ChatMessage]) -> String {
             .find('\n')
             .map(|i| start + i + 1)
             .unwrap_or(start);
-        format!("...(earlier conversation truncated)\n\n{}", &full[boundary..])
+        format!(
+            "...(earlier conversation truncated)\n\n{}",
+            &full[boundary..]
+        )
     } else {
         full
     }
@@ -261,12 +264,16 @@ mod tests {
     fn summarize_history_keeps_tail_when_too_long() {
         let mut history = Vec::new();
         for i in 0..200 {
-            history.push(ChatMessage::user(&format!("Message number {i} with some padding content to make it longer")));
-            history.push(ChatMessage::assistant(&format!("Response to message {i} with some padding")));
+            history.push(ChatMessage::user(&format!(
+                "Message number {i} with some padding content to make it longer"
+            )));
+            history.push(ChatMessage::assistant(&format!(
+                "Response to message {i} with some padding"
+            )));
         }
         let transcript = summarize_history(&history);
         assert!(transcript.len() <= MAX_TRANSCRIPT_CHARS + 100); // some slack for prefix
-        // Should contain recent messages, not early ones
+                                                                 // Should contain recent messages, not early ones
         assert!(transcript.contains("Message number 199"));
     }
 

@@ -17,6 +17,7 @@
 
 pub mod agents_ipc;
 pub mod apply_patch;
+pub mod ask_user;
 pub mod browser;
 pub mod browser_open;
 pub mod channel_runtime_context;
@@ -37,6 +38,8 @@ pub mod file_read;
 pub mod file_write;
 pub mod git_operations;
 pub mod glob_search;
+pub mod group_management;
+pub mod workflow_trigger;
 #[cfg(feature = "hardware")]
 pub mod hardware_board_info;
 #[cfg(feature = "hardware")]
@@ -59,16 +62,13 @@ pub mod screenshot;
 pub mod shell;
 pub mod skill_manage;
 pub mod storage;
-pub mod storage_download;
-pub mod storage_list;
-pub mod storage_read;
-pub mod storage_upload;
 pub mod subagent_list;
 pub mod subagent_manage;
 pub mod subagent_registry;
 pub mod subagent_spawn;
 pub mod task_management;
 pub mod task_plan;
+pub mod team_management;
 pub mod traits;
 pub mod url_validation;
 pub mod wasm_module;
@@ -76,6 +76,7 @@ pub mod web_fetch;
 pub mod web_search_tool;
 
 pub use apply_patch::ApplyPatchTool;
+pub use ask_user::AskUserTool;
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
@@ -94,6 +95,8 @@ pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
 pub use glob_search::GlobSearchTool;
+pub use group_management::GroupManagementTool;
+pub use workflow_trigger::WorkflowTriggerTool;
 #[cfg(feature = "hardware")]
 pub use hardware_board_info::HardwareBoardInfoTool;
 #[cfg(feature = "hardware")]
@@ -117,16 +120,13 @@ pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
 pub use skill_manage::SkillManageTool;
 pub use storage::StorageTool;
-pub use storage_download::StorageDownloadTool;
-pub use storage_list::StorageListTool;
-pub use storage_read::StorageReadTool;
-pub use storage_upload::StorageUploadTool;
 pub use subagent_list::SubAgentListTool;
 pub use subagent_manage::SubAgentManageTool;
 pub use subagent_registry::SubAgentRegistry;
-pub use task_management::TaskManagementTool;
 pub use subagent_spawn::SubAgentSpawnTool;
+pub use task_management::TaskManagementTool;
 pub use task_plan::TaskPlanTool;
+pub use team_management::TeamManagementTool;
 pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
@@ -433,6 +433,40 @@ pub fn all_tools_with_runtime(
         }
     }
 
+    // Team cloud storage (active when running under platform gateway)
+    // NOTE: registered BEFORE delegation so subagents can access these via parent_tools
+    if let (Ok(gw_port), Ok(team_id)) = (std::env::var("GATEWAY_PORT"), std::env::var("TEAM_ID")) {
+        let gateway_url = format!("http://127.0.0.1:{gw_port}");
+        tool_arcs.push(Arc::new(StorageTool::new(
+            workspace_dir.to_path_buf(),
+            gateway_url,
+            team_id,
+        )));
+    }
+
+    // Platform tools (active when [platform] config is present)
+    // NOTE: registered BEFORE delegation so subagents can access these via parent_tools
+    {
+        let platform = &root_config.platform;
+        if platform.enabled {
+            if let (Some(url), Some(tid), Some(_role)) = (
+                &platform.gateway_url,
+                &platform.team_id,
+                &platform.agent_role,
+            ) {
+                tool_arcs.push(Arc::new(SkillManageTool::new(
+                    url.clone(),
+                    tid.clone(),
+                    workspace_dir.to_path_buf(),
+                )));
+                tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(GroupManagementTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(WorkflowTriggerTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(AskUserTool::new()));
+            }
+        }
+    }
+
     // Add delegation and sub-agent orchestration tools when agents are configured
     if !agents.is_empty() {
         let delegate_agents: HashMap<String, DelegateAgentConfig> = agents
@@ -467,7 +501,8 @@ pub fn all_tools_with_runtime(
             provider_runtime_options.clone(),
         )
         .with_parent_tools(parent_tools.clone())
-        .with_multimodal_config(root_config.multimodal.clone());
+        .with_multimodal_config(root_config.multimodal.clone())
+        .with_parent_workspace(root_config.workspace_dir.clone());
 
         if root_config.coordination.enabled {
             let coordination_lead_agent = {
@@ -522,6 +557,7 @@ pub fn all_tools_with_runtime(
             subagent_registry.clone(),
             parent_tools,
             root_config.multimodal.clone(),
+            root_config.workspace_dir.clone(),
         );
         if let Some(tx) = event_tx {
             spawn_tool = spawn_tool.with_completion_tx(tx);
@@ -553,38 +589,6 @@ pub fn all_tools_with_runtime(
             }
             Err(e) => {
                 tracing::warn!("agents_ipc: failed to open IPC database: {e}");
-            }
-        }
-    }
-
-    // Team cloud storage (active when running under platform gateway)
-    if let (Ok(gw_port), Ok(team_id)) = (
-        std::env::var("GATEWAY_PORT"),
-        std::env::var("TEAM_ID"),
-    ) {
-        let gateway_url = format!("http://127.0.0.1:{gw_port}");
-        tool_arcs.push(Arc::new(StorageTool::new(
-            workspace_dir.to_path_buf(),
-            gateway_url,
-            team_id,
-        )));
-    }
-
-    // Platform skill management (active when [platform] config is present)
-    {
-        let platform = &root_config.platform;
-        if platform.enabled {
-            if let (Some(url), Some(tid), Some(role)) = (
-                &platform.gateway_url,
-                &platform.team_id,
-                &platform.agent_role,
-            ) {
-                tool_arcs.push(Arc::new(SkillManageTool::new(
-                    url.clone(),
-                    tid.clone(),
-                    role.clone(),
-                )));
-                tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), tid.clone())));
             }
         }
     }
@@ -933,11 +937,15 @@ mod tests {
                 model: "llama3".to_string(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
 
@@ -1020,11 +1028,15 @@ mod tests {
                 model: "llama3".to_string(),
                 system_prompt: None,
                 api_key: None,
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
 

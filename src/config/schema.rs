@@ -383,6 +383,9 @@ pub struct DelegateAgentConfig {
     /// Optional API key override
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Optional API URL override (e.g. custom OpenAI-compatible endpoint)
+    #[serde(default)]
+    pub api_url: Option<String>,
     /// Temperature override
     #[serde(default)]
     pub temperature: Option<f64>,
@@ -398,6 +401,19 @@ pub struct DelegateAgentConfig {
     /// Maximum tool-call iterations in agentic mode.
     #[serde(default = "default_max_tool_iterations")]
     pub max_iterations: usize,
+    /// Sub-agent workspace directory (relative to parent workspace).
+    /// When set, the sub-agent loads workspace files (AGENTS.md, TOOLS.md, etc.)
+    /// from this directory instead of relying solely on `system_prompt`.
+    #[serde(default)]
+    pub workspace_dir: Option<String>,
+    /// Use `SystemPromptBuilder` to assemble a full system prompt from workspace
+    /// files + tools + skills, just like a normal agent. When `false` (default),
+    /// the raw `system_prompt` string is used as-is.
+    #[serde(default)]
+    pub use_prompt_builder: bool,
+    /// Load skills from `<workspace_dir>/skills/` when `use_prompt_builder` is true.
+    #[serde(default)]
+    pub skills_enabled: bool,
 }
 
 fn default_max_depth() -> u32 {
@@ -420,6 +436,9 @@ impl std::fmt::Debug for DelegateAgentConfig {
             .field("agentic", &self.agentic)
             .field("allowed_tools", &self.allowed_tools)
             .field("max_iterations", &self.max_iterations)
+            .field("workspace_dir", &self.workspace_dir)
+            .field("use_prompt_builder", &self.use_prompt_builder)
+            .field("skills_enabled", &self.skills_enabled)
             .finish()
     }
 }
@@ -7076,11 +7095,15 @@ mod tests {
                 model: "model-test".into(),
                 system_prompt: None,
                 api_key: Some("agent-credential".into()),
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
 
@@ -7905,11 +7928,15 @@ tool_dispatcher = "xml"
                 model: "model-test".into(),
                 system_prompt: None,
                 api_key: Some("agent-credential".into()),
+                api_url: None,
                 temperature: None,
                 max_depth: 3,
                 agentic: false,
                 allowed_tools: Vec::new(),
                 max_iterations: 10,
+                workspace_dir: None,
+                use_prompt_builder: false,
+                skills_enabled: false,
             },
         );
 
