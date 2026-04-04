@@ -28,6 +28,7 @@ pub mod delegate_coordination_status;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
+pub mod gateway_call;
 pub mod git_operations;
 pub mod glob_search;
 pub mod group_management;
@@ -66,6 +67,7 @@ pub use delegate_coordination_status::DelegateCoordinationStatusTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
+pub use gateway_call::GatewayCallTool;
 pub use git_operations::GitOperationsTool;
 pub use glob_search::GlobSearchTool;
 pub use group_management::GroupManagementTool;
@@ -386,6 +388,7 @@ pub fn all_tools_with_runtime(
                 tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(GroupManagementTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(WorkflowTriggerTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(GatewayCallTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(AskUserTool::new()));
             }
         }
