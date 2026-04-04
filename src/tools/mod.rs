@@ -15,7 +15,6 @@
 //! To add a new tool, implement [`Tool`] in a new submodule and register it in
 //! [`all_tools_with_runtime`]. See `AGENTS.md` §7.3 for the full change playbook.
 
-pub mod agents_ipc;
 pub mod apply_patch;
 pub mod ask_user;
 pub mod browser;
@@ -24,15 +23,8 @@ pub mod channel_runtime_context;
 pub mod cli_discovery;
 pub mod composio;
 pub mod content_search;
-pub mod cron_add;
-pub mod cron_list;
-pub mod cron_remove;
-pub mod cron_run;
-pub mod cron_runs;
-pub mod cron_update;
 pub mod delegate;
 pub mod delegate_coordination_status;
-pub mod discord_history_fetch;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
@@ -51,27 +43,15 @@ pub mod image_info;
 pub mod memory_forget;
 pub mod memory_recall;
 pub mod memory_store;
-pub mod model_routing_config;
 pub mod pdf_read;
 pub mod process;
-pub mod proxy_config;
-pub mod pushover;
-pub mod schedule;
 pub mod schema;
-pub mod screenshot;
 pub mod shell;
 pub mod skill_manage;
 pub mod storage;
-pub mod subagent_list;
-pub mod subagent_manage;
-pub mod subagent_registry;
-pub mod subagent_spawn;
 pub mod task_management;
-pub mod task_plan;
-pub mod team_management;
 pub mod traits;
 pub mod url_validation;
-pub mod wasm_module;
 pub mod web_fetch;
 pub mod web_search_tool;
 
@@ -81,15 +61,8 @@ pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
 pub use content_search::ContentSearchTool;
-pub use cron_add::CronAddTool;
-pub use cron_list::CronListTool;
-pub use cron_remove::CronRemoveTool;
-pub use cron_run::CronRunTool;
-pub use cron_runs::CronRunsTool;
-pub use cron_update::CronUpdateTool;
 pub use delegate::DelegateTool;
 pub use delegate_coordination_status::DelegateCoordinationStatusTool;
-pub use discord_history_fetch::DiscordHistoryFetchTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
@@ -108,29 +81,17 @@ pub use image_info::ImageInfoTool;
 pub use memory_forget::MemoryForgetTool;
 pub use memory_recall::MemoryRecallTool;
 pub use memory_store::MemoryStoreTool;
-pub use model_routing_config::ModelRoutingConfigTool;
 pub use pdf_read::PdfReadTool;
 pub use process::ProcessTool;
-pub use proxy_config::ProxyConfigTool;
-pub use pushover::PushoverTool;
-pub use schedule::ScheduleTool;
 #[allow(unused_imports)]
 pub use schema::{CleaningStrategy, SchemaCleanr};
-pub use screenshot::ScreenshotTool;
 pub use shell::ShellTool;
 pub use skill_manage::SkillManageTool;
 pub use storage::StorageTool;
-pub use subagent_list::SubAgentListTool;
-pub use subagent_manage::SubAgentManageTool;
-pub use subagent_registry::SubAgentRegistry;
-pub use subagent_spawn::SubAgentSpawnTool;
 pub use task_management::TaskManagementTool;
-pub use task_plan::TaskPlanTool;
-pub use team_management::TeamManagementTool;
 pub use traits::Tool;
 #[allow(unused_imports)]
 pub use traits::{ToolResult, ToolSpec};
-pub use wasm_module::WasmModuleTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search_tool::WebSearchTool;
 
@@ -201,9 +162,6 @@ pub fn default_tools_with_runtime(
         tools.push(Box::new(GlobSearchTool::new(security.clone())));
         tools.push(Box::new(ContentSearchTool::new(security.clone())));
     }
-    if runtime.as_any().is::<crate::runtime::WasmRuntime>() {
-        tools.push(Box::new(WasmModuleTool::new(security, runtime)));
-    }
 
     tools
 }
@@ -223,7 +181,7 @@ pub fn all_tools(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &crate::config::Config,
-    event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    _event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 ) -> Vec<Box<dyn Tool>> {
     all_tools_with_runtime(
         config,
@@ -239,14 +197,14 @@ pub fn all_tools(
         agents,
         fallback_api_key,
         root_config,
-        event_tx,
+        None,
     )
 }
 
 /// Create full tool registry including memory tools and optional Composio.
 #[allow(clippy::implicit_hasher, clippy::too_many_arguments)]
 pub fn all_tools_with_runtime(
-    config: Arc<Config>,
+    _config: Arc<Config>,
     security: &Arc<SecurityPolicy>,
     runtime: Arc<dyn RuntimeAdapter>,
     memory: Arc<dyn Memory>,
@@ -259,7 +217,7 @@ pub fn all_tools_with_runtime(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &crate::config::Config,
-    event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    _event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 ) -> Vec<Box<dyn Tool>> {
     let has_shell_access = runtime.has_shell_access();
     let has_filesystem_access = runtime.has_filesystem_access();
@@ -275,37 +233,10 @@ pub fn all_tools_with_runtime(
     ));
 
     let mut tool_arcs: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(CronAddTool::new(config.clone(), security.clone())),
-        Arc::new(CronListTool::new(config.clone())),
-        Arc::new(CronRemoveTool::new(config.clone(), security.clone())),
-        Arc::new(CronUpdateTool::new(config.clone(), security.clone())),
-        Arc::new(CronRunTool::new(config.clone(), security.clone())),
-        Arc::new(CronRunsTool::new(config.clone())),
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryRecallTool::new(memory.clone())),
         Arc::new(MemoryForgetTool::new(memory, security.clone())),
-        Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
-        Arc::new(TaskPlanTool::new(security.clone())),
-        Arc::new(ModelRoutingConfigTool::new(
-            config.clone(),
-            security.clone(),
-        )),
-        Arc::new(ProxyConfigTool::new(config.clone(), security.clone())),
-        Arc::new(PushoverTool::new(
-            security.clone(),
-            workspace_dir.to_path_buf(),
-        )),
     ];
-
-    if let Some(discord) = root_config.channels_config.discord.as_ref() {
-        let token = discord.bot_token.trim();
-        if !token.is_empty() {
-            tool_arcs.push(Arc::new(DiscordHistoryFetchTool::new(
-                security.clone(),
-                token.to_string(),
-            )));
-        }
-    }
 
     if has_shell_access {
         tool_arcs.push(Arc::new(ShellTool::new_with_syscall_detector(
@@ -331,12 +262,6 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(ApplyPatchTool::new()));
         tool_arcs.push(Arc::new(GlobSearchTool::new(security.clone())));
         tool_arcs.push(Arc::new(ContentSearchTool::new(security.clone())));
-    }
-    if runtime.as_any().is::<crate::runtime::WasmRuntime>() {
-        tool_arcs.push(Arc::new(WasmModuleTool::new(
-            security.clone(),
-            runtime.clone(),
-        )));
     }
 
     if browser_config.enabled {
@@ -419,8 +344,7 @@ pub fn all_tools_with_runtime(
     // PDF extraction (feature-gated at compile time via rag-pdf)
     tool_arcs.push(Arc::new(PdfReadTool::new(security.clone())));
 
-    // Vision tools are always available
-    tool_arcs.push(Arc::new(ScreenshotTool::new(security.clone())));
+    // Vision tools
     tool_arcs.push(Arc::new(ImageInfoTool::new(security.clone())));
 
     if let Some(key) = composio_key {
@@ -548,49 +472,6 @@ pub fn all_tools_with_runtime(
             tool_arcs.push(Arc::new(delegate_tool));
         }
 
-        let subagent_registry = Arc::new(SubAgentRegistry::new());
-        let mut spawn_tool = SubAgentSpawnTool::new(
-            delegate_agents,
-            delegate_fallback_credential,
-            security.clone(),
-            provider_runtime_options,
-            subagent_registry.clone(),
-            parent_tools,
-            root_config.multimodal.clone(),
-            root_config.workspace_dir.clone(),
-        );
-        if let Some(tx) = event_tx {
-            spawn_tool = spawn_tool.with_completion_tx(tx);
-        }
-        tool_arcs.push(Arc::new(spawn_tool));
-        tool_arcs.push(Arc::new(SubAgentListTool::new(subagent_registry.clone())));
-        tool_arcs.push(Arc::new(SubAgentManageTool::new(
-            subagent_registry,
-            security.clone(),
-        )));
-    }
-
-    // Inter-process agent communication (opt-in)
-    if root_config.agents_ipc.enabled {
-        match agents_ipc::IpcDb::open(workspace_dir, &root_config.agents_ipc) {
-            Ok(ipc_db) => {
-                let ipc_db = Arc::new(ipc_db);
-                tool_arcs.push(Arc::new(agents_ipc::AgentsListTool::new(ipc_db.clone())));
-                tool_arcs.push(Arc::new(agents_ipc::AgentsSendTool::new(
-                    ipc_db.clone(),
-                    security.clone(),
-                )));
-                tool_arcs.push(Arc::new(agents_ipc::AgentsInboxTool::new(ipc_db.clone())));
-                tool_arcs.push(Arc::new(agents_ipc::StateGetTool::new(ipc_db.clone())));
-                tool_arcs.push(Arc::new(agents_ipc::StateSetTool::new(
-                    ipc_db,
-                    security.clone(),
-                )));
-            }
-            Err(e) => {
-                tracing::warn!("agents_ipc: failed to open IPC database: {e}");
-            }
-        }
     }
 
     boxed_registry_from_arcs(tool_arcs)
@@ -599,8 +480,7 @@ pub fn all_tools_with_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BrowserConfig, Config, DiscordConfig, MemoryConfig, WasmRuntimeConfig};
-    use crate::runtime::WasmRuntime;
+    use crate::config::{BrowserConfig, Config, MemoryConfig};
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {
@@ -617,32 +497,6 @@ mod tests {
         let tools = default_tools(security);
         assert_eq!(tools.len(), 7);
         assert!(tools.iter().any(|tool| tool.name() == "apply_patch"));
-    }
-
-    #[test]
-    fn default_tools_with_runtime_includes_wasm_module_for_wasm_runtime() {
-        let security = Arc::new(SecurityPolicy::default());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
-        let tools = default_tools_with_runtime(security, runtime);
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"wasm_module"));
-    }
-
-    #[test]
-    fn default_tools_with_runtime_excludes_shell_and_fs_for_wasm_runtime() {
-        let security = Arc::new(SecurityPolicy::default());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
-        let tools = default_tools_with_runtime(security, runtime);
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(!names.contains(&"shell"));
-        assert!(!names.contains(&"file_read"));
-        assert!(!names.contains(&"file_write"));
-        assert!(!names.contains(&"file_edit"));
-        assert!(!names.contains(&"apply_patch"));
-        assert!(!names.contains(&"glob_search"));
-        assert!(!names.contains(&"content_search"));
     }
 
     #[test]
@@ -683,52 +537,6 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"browser_open"));
         assert!(!names.contains(&"discord_history_fetch"));
-        assert!(names.contains(&"schedule"));
-        assert!(names.contains(&"model_routing_config"));
-        assert!(names.contains(&"pushover"));
-        assert!(names.contains(&"proxy_config"));
-    }
-
-    #[test]
-    fn all_tools_includes_discord_history_fetch_when_discord_configured() {
-        let tmp = TempDir::new().unwrap();
-        let security = Arc::new(SecurityPolicy::default());
-        let mem_cfg = MemoryConfig {
-            backend: "markdown".into(),
-            ..MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> =
-            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
-
-        let browser = BrowserConfig::default();
-        let http = crate::config::HttpRequestConfig::default();
-        let mut cfg = test_config(&tmp);
-        cfg.channels_config.discord = Some(DiscordConfig {
-            bot_token: "discord-token".into(),
-            guild_id: None,
-            allowed_users: vec!["*".into()],
-            listen_to_bots: false,
-            mention_only: false,
-        });
-
-        let tools = all_tools(
-            Arc::new(cfg.clone()),
-            &security,
-            mem,
-            None,
-            None,
-            &browser,
-            &http,
-            &crate::config::WebFetchConfig::default(),
-            tmp.path(),
-            &HashMap::new(),
-            None,
-            &cfg,
-            None,
-        );
-
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"discord_history_fetch"));
     }
 
     #[test]
@@ -769,52 +577,6 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"browser_open"));
         assert!(names.contains(&"content_search"));
-        assert!(names.contains(&"model_routing_config"));
-        assert!(names.contains(&"pushover"));
-        assert!(names.contains(&"proxy_config"));
-    }
-
-    #[test]
-    fn all_tools_with_runtime_includes_wasm_module_for_wasm_runtime() {
-        let tmp = TempDir::new().unwrap();
-        let security = Arc::new(SecurityPolicy::default());
-        let mem_cfg = MemoryConfig {
-            backend: "markdown".into(),
-            ..MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> =
-            Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
-        let runtime: Arc<dyn RuntimeAdapter> =
-            Arc::new(WasmRuntime::new(WasmRuntimeConfig::default()));
-
-        let browser = BrowserConfig::default();
-        let http = crate::config::HttpRequestConfig::default();
-        let cfg = test_config(&tmp);
-
-        let tools = all_tools_with_runtime(
-            Arc::new(Config::default()),
-            &security,
-            runtime,
-            mem,
-            None,
-            None,
-            &browser,
-            &http,
-            &crate::config::WebFetchConfig::default(),
-            tmp.path(),
-            &HashMap::new(),
-            None,
-            &cfg,
-            None,
-        );
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"wasm_module"));
-        assert!(!names.contains(&"shell"));
-        assert!(!names.contains(&"process"));
-        assert!(!names.contains(&"git_operations"));
-        assert!(!names.contains(&"file_read"));
-        assert!(!names.contains(&"file_write"));
-        assert!(!names.contains(&"file_edit"));
     }
 
     #[test]
