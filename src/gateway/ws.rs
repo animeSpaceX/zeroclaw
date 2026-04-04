@@ -45,6 +45,7 @@ fn append_chat_log(config_dir: &Path, entry: &serde_json::Value) {
 #[derive(Debug, Clone, PartialEq)]
 enum WsDeltaEvent {
     ContentChunk(String),
+    Thinking { iteration: u32 },
     ToolCall {
         name: String,
         hint: Option<String>,
@@ -158,6 +159,19 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
 
     if let Some(progress) = delta.strip_prefix(DRAFT_PROGRESS_SENTINEL) {
         let progress = progress.trim();
+        if let Some(rest) = progress.strip_prefix("🤔 ") {
+            let iteration = if rest.starts_with("Thinking (round ") {
+                rest.trim_start_matches("Thinking (round ")
+                    .split(')')
+                    .next()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .map(|n| n.saturating_sub(1))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            return Some(WsDeltaEvent::Thinking { iteration });
+        }
         if let Some(rest) = progress.strip_prefix("⏳ ") {
             let rest = rest.trim();
             if rest.is_empty() {
@@ -229,6 +243,10 @@ async fn emit_ws_delta_event(socket: &mut WebSocket, event: WsDeltaEvent) {
         WsDeltaEvent::ContentChunk(content) => json!({
             "type": "chunk",
             "content": content,
+        }),
+        WsDeltaEvent::Thinking { iteration } => json!({
+            "type": "thinking",
+            "iteration": iteration,
         }),
         WsDeltaEvent::ToolCall {
             name,
