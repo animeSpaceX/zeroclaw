@@ -148,6 +148,9 @@ struct AnthropicUsage {
     input_tokens: Option<u64>,
     #[serde(default)]
     output_tokens: Option<u64>,
+    /// Tokens read from Anthropic's prompt cache.
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -420,6 +423,7 @@ impl AnthropicProvider {
         let usage = response.usage.map(|u| TokenUsage {
             input_tokens: u.input_tokens,
             output_tokens: u.output_tokens,
+            cached_tokens: u.cache_read_input_tokens,
         });
 
         for block in response.content {

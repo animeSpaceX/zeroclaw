@@ -1007,11 +1007,11 @@ pub(crate) async fn run_tool_call_loop(
             response_streamed_live,
         ) = match chat_result {
             Ok(resp) => {
-                let (resp_input_tokens, resp_output_tokens) = resp
+                let (resp_input_tokens, resp_output_tokens, resp_cached_tokens) = resp
                     .usage
                     .as_ref()
-                    .map(|u| (u.input_tokens, u.output_tokens))
-                    .unwrap_or((None, None));
+                    .map(|u| (u.input_tokens, u.output_tokens, u.cached_tokens))
+                    .unwrap_or((None, None, None));
 
                 observer.record_event(&ObserverEvent::LlmResponse {
                     provider: provider_name.to_string(),
@@ -1029,6 +1029,7 @@ pub(crate) async fn run_tool_call_loop(
                 let _llm_elapsed_ms = llm_started_at.elapsed().as_millis();
                 tracing::debug!(target: "agent_timing", iteration = iteration + 1, duration_ms = _llm_elapsed_ms,
                                input_tokens = resp_input_tokens, output_tokens = resp_output_tokens,
+                               cached_tokens = resp_cached_tokens,
                                tool_calls = resp.tool_calls.len(), "📥 LLM response received");
 
                 // First try native structured tool calls (OpenAI-format).

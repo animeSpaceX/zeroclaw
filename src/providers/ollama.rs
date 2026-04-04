@@ -619,6 +619,7 @@ impl Provider for OllamaProvider {
             Some(TokenUsage {
                 input_tokens: response.prompt_eval_count,
                 output_tokens: response.eval_count,
+                cached_tokens: None,
             })
         } else {
             None

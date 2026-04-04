@@ -461,6 +461,18 @@ struct UsageInfo {
     prompt_tokens: Option<u64>,
     #[serde(default)]
     completion_tokens: Option<u64>,
+    /// Detailed breakdown of prompt tokens (OpenAI / Volcengine compatible).
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+/// Prompt token breakdown returned by providers that support transparent prefix caching
+/// (OpenAI, Volcengine/Doubao, etc.).
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    /// Number of input tokens served from the provider's prefix cache.
+    #[serde(default)]
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -720,6 +732,9 @@ struct ResponsesWebSocketCreateEvent {
 struct StreamChunkResponse {
     #[serde(default)]
     choices: Vec<StreamChoice>,
+    /// Usage stats returned in the final chunk (OpenAI / Volcengine compatible).
+    #[serde(default)]
+    usage: Option<UsageInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2273,6 +2288,7 @@ impl Provider for OpenAiCompatibleProvider {
         let usage = chat_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
+            cached_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
         let choice = chat_response
             .choices
@@ -2430,6 +2446,7 @@ impl Provider for OpenAiCompatibleProvider {
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
+            cached_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
         let message = native_response
             .choices
@@ -2854,6 +2871,7 @@ mod tests {
             stream: Some(false),
             tools: None,
             tool_choice: None,
+            thinking: Some(ThinkingConfig::disabled()),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("llama-3.3-70b"));

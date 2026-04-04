@@ -22,7 +22,7 @@ impl SkillManageTool {
         }
     }
 
-    /// Trigger delayed self-restart via gateway (5s delay to let agent finish responding)
+    /// Trigger self-restart via gateway (1s delay to let tool_result flush)
     fn schedule_restart(&self) {
         let url = format!(
             "{}/api/agents/{}/restart-self",
@@ -30,7 +30,7 @@ impl SkillManageTool {
         );
         let api_key = self.api_key.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             let client = reqwest::Client::new();
             let resp = client
                 .post(&url)
@@ -272,8 +272,68 @@ impl SkillManageTool {
         ToolResult {
             success: true,
             output: format!(
-                "Skill '{skill_name}' installed successfully ({written} files). Agent will auto-restart in ~15 seconds to load the new skill."
+                "Skill '{skill_name}' installed successfully ({written} files). Agent will restart shortly to load the new skill."
             ),
+            error: None,
+        }
+    }
+
+    /// Load full skill instructions for on-demand use (no restart needed)
+    async fn do_use(&self, skill_name: &str) -> ToolResult {
+        let skill_dir = self.skills_dir.join(skill_name);
+        if !skill_dir.exists() {
+            return ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Skill '{skill_name}' is not installed. Use skill_manage(action=\"list\") to see installed skills, or skill_manage(action=\"install\", skill_name=\"{skill_name}\") to install it."
+                )),
+            };
+        }
+
+        let skill_md = skill_dir.join("SKILL.md");
+        if !skill_md.exists() {
+            return ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!(
+                    "Skill '{skill_name}' has no SKILL.md file."
+                )),
+            };
+        }
+
+        // Read SKILL.md and replace {baseDir} with absolute path
+        let content = match tokio::fs::read_to_string(&skill_md).await {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Failed to read SKILL.md: {e}")),
+                };
+            }
+        };
+
+        let abs_dir = match skill_dir.canonicalize() {
+            Ok(p) => p.display().to_string(),
+            Err(_) => skill_dir.display().to_string(),
+        };
+        let content = content.replace("{baseDir}", &abs_dir);
+
+        // Recursively list all files in skill directory
+        let files = list_skill_files(&skill_dir, &skill_dir);
+
+        let mut output = format!(
+            "<skill_instructions name=\"{skill_name}\" dir=\"{abs_dir}\">\n\n{content}\n\n</skill_instructions>\n\nFiles in this skill:\n"
+        );
+        for f in &files {
+            output.push_str(&format!("  {f}\n"));
+        }
+        output.push_str("\nUse file_read to read any reference file if needed.\nFollow the instructions above to complete the user's request.");
+
+        ToolResult {
+            success: true,
+            output,
             error: None,
         }
     }
@@ -302,11 +362,32 @@ impl SkillManageTool {
         ToolResult {
             success: true,
             output: format!(
-                "Skill '{skill_name}' removed successfully. Agent will auto-restart in ~15 seconds."
+                "Skill '{skill_name}' removed successfully. Agent will restart shortly."
             ),
             error: None,
         }
     }
+}
+
+/// Recursively list all files in a directory, returning relative paths.
+fn list_skill_files(dir: &std::path::Path, base: &std::path::Path) -> Vec<String> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(list_skill_files(&path, base));
+        } else if path.is_file() {
+            if let Ok(rel) = path.strip_prefix(base) {
+                files.push(rel.display().to_string());
+            }
+        }
+    }
+    files
 }
 
 /// Parse description from YAML frontmatter in SKILL.md
@@ -334,7 +415,7 @@ impl Tool for SkillManageTool {
     }
 
     fn description(&self) -> &str {
-        "Manage agent skills at runtime. Actions: discover (list available skills from platform library), list (show installed skills), install (add a skill), update (reinstall a skill), remove (uninstall a skill). Skills take effect after agent restart."
+        "Manage agent skills. Actions: use (load skill instructions to execute now), discover (browse platform skill library), list (show installed skills), install (add a skill), update (reinstall a skill), remove (uninstall a skill). Use 'use' to load a skill's full instructions before executing it."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -343,12 +424,12 @@ impl Tool for SkillManageTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["discover", "list", "install", "update", "remove"],
-                    "description": "discover: view available skills; list: view installed skills; install/update: install or update a skill; remove: uninstall a skill"
+                    "enum": ["use", "discover", "list", "install", "update", "remove"],
+                    "description": "use: load full skill instructions for immediate execution; discover: browse platform library; list: show installed skills; install/update: install or update a skill; remove: uninstall a skill"
                 },
                 "skill_name": {
                     "type": "string",
-                    "description": "Skill name (required for install/update/remove)"
+                    "description": "Skill name (required for use/install/update/remove)"
                 }
             },
             "required": ["action"]
@@ -360,6 +441,16 @@ impl Tool for SkillManageTool {
         let skill_name = args["skill_name"].as_str().unwrap_or("").to_string();
 
         match action.as_str() {
+            "use" => {
+                if skill_name.is_empty() {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("skill_name is required for use".to_string()),
+                    });
+                }
+                Ok(self.do_use(&skill_name).await)
+            }
             "discover" => Ok(self.do_discover().await),
             "list" => Ok(self.do_list().await),
             "install" | "update" => {
@@ -386,7 +477,7 @@ impl Tool for SkillManageTool {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Unknown action '{action}'. Use: discover, list, install, update, remove"
+                    "Unknown action '{action}'. Use: use, discover, list, install, update, remove"
                 )),
             }),
         }

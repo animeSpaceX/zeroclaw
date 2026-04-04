@@ -162,6 +162,9 @@ struct GeminiUsageMetadata {
     prompt_token_count: Option<u64>,
     #[serde(default, rename = "candidatesTokenCount")]
     candidates_token_count: Option<u64>,
+    /// Tokens served from Gemini's context cache.
+    #[serde(default, rename = "cachedContentTokenCount")]
+    cached_content_token_count: Option<u64>,
 }
 
 /// Response envelope for the internal cloudcode-pa API.
@@ -1130,6 +1133,7 @@ impl GeminiProvider {
         let usage = result.usage_metadata.map(|u| TokenUsage {
             input_tokens: u.prompt_token_count,
             output_tokens: u.candidates_token_count,
+            cached_tokens: u.cached_content_token_count,
         });
 
         let text = result

@@ -9,6 +9,10 @@ pub struct TokenUsage {
     pub input_tokens: u64,
     /// Output/completion tokens
     pub output_tokens: u64,
+    /// Tokens served from provider-side prompt cache (subset of input_tokens).
+    /// These are billed at a discounted rate.
+    #[serde(default)]
+    pub cached_tokens: u64,
     /// Total tokens
     pub total_tokens: u64,
     /// Calculated cost in USD
@@ -34,13 +38,37 @@ impl TokenUsage {
         input_price_per_million: f64,
         output_price_per_million: f64,
     ) -> Self {
+        Self::new_with_cache(model, input_tokens, output_tokens, 0, input_price_per_million, output_price_per_million, None)
+    }
+
+    /// Create a token usage record with prompt-cache awareness.
+    ///
+    /// `cached_tokens` are a subset of `input_tokens` served from the provider's
+    /// prefix cache.  When `cached_price_per_million` is provided, these tokens
+    /// are billed at the discounted rate; the remaining input tokens use the
+    /// standard `input_price_per_million`.
+    pub fn new_with_cache(
+        model: impl Into<String>,
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_tokens: u64,
+        input_price_per_million: f64,
+        output_price_per_million: f64,
+        cached_price_per_million: Option<f64>,
+    ) -> Self {
         let model = model.into();
         let input_price_per_million = Self::sanitize_price(input_price_per_million);
         let output_price_per_million = Self::sanitize_price(output_price_per_million);
         let total_tokens = input_tokens.saturating_add(output_tokens);
 
-        // Calculate cost: (tokens / 1M) * price_per_million
-        let input_cost = (input_tokens as f64 / 1_000_000.0) * input_price_per_million;
+        // Calculate cost: cached tokens at discount, remainder at standard rate
+        let effective_cached = cached_tokens.min(input_tokens);
+        let non_cached_input = input_tokens.saturating_sub(effective_cached);
+        let cached_rate = cached_price_per_million
+            .map(Self::sanitize_price)
+            .unwrap_or(input_price_per_million);
+        let input_cost = (non_cached_input as f64 / 1_000_000.0) * input_price_per_million
+            + (effective_cached as f64 / 1_000_000.0) * cached_rate;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_price_per_million;
         let cost_usd = input_cost + output_cost;
 
@@ -48,6 +76,7 @@ impl TokenUsage {
             model,
             input_tokens,
             output_tokens,
+            cached_tokens: effective_cached,
             total_tokens,
             cost_usd,
             timestamp: chrono::Utc::now(),

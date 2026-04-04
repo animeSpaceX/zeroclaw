@@ -54,6 +54,9 @@ pub struct ToolCall {
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Tokens served from provider-side prompt cache (e.g. prefix cache).
+    /// Subset of `input_tokens` — these tokens were cached and billed at a discount.
+    pub cached_tokens: Option<u64>,
 }
 
 /// An LLM response that may contain text, tool calls, or both.
@@ -621,6 +624,7 @@ mod tests {
             usage: Some(TokenUsage {
                 input_tokens: Some(100),
                 output_tokens: Some(50),
+                cached_tokens: None,
             }),
             reasoning_content: None,
         };

@@ -761,8 +761,10 @@ impl Default for AgentConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillsPromptInjectionMode {
-    /// Inline only compact skill metadata (name/description/location) and load details on demand.
+    /// List available skills in system prompt; agent calls `skill_manage(action="use")` to load full instructions at runtime.
     #[default]
+    OnDemand,
+    /// Inline only compact skill metadata (name/description/location) and tell agent to read skill files.
     Compact,
     /// Inline full skill instructions and tool metadata into the system prompt.
     Full,
@@ -772,6 +774,7 @@ fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjection
     match raw.trim().to_ascii_lowercase().as_str() {
         "full" => Some(SkillsPromptInjectionMode::Full),
         "compact" => Some(SkillsPromptInjectionMode::Compact),
+        "on_demand" | "ondemand" => Some(SkillsPromptInjectionMode::OnDemand),
         _ => None,
     }
 }
@@ -788,7 +791,8 @@ pub struct SkillsConfig {
     #[serde(default)]
     pub open_skills_dir: Option<String>,
     /// Controls how skills are injected into the system prompt.
-    /// `compact` (default) keeps context small and loads skills on demand.
+    /// `on_demand` (default) lists skills in system prompt; agent loads via `skill_manage(action="use")`.
+    /// `compact` keeps context small and tells agent to read skill files directly.
     /// `full` preserves legacy behavior as an opt-in.
     #[serde(default)]
     pub prompt_injection_mode: SkillsPromptInjectionMode,
@@ -6614,7 +6618,7 @@ impl Config {
                     self.skills.prompt_injection_mode = parsed;
                 } else {
                     tracing::warn!(
-                        "Ignoring invalid ZEROCLAW_SKILLS_PROMPT_MODE (valid: full|compact)"
+                        "Ignoring invalid ZEROCLAW_SKILLS_PROMPT_MODE (valid: full|compact|on_demand)"
                     );
                 }
             }
@@ -7063,7 +7067,7 @@ mod tests {
         assert!(!c.skills.open_skills_enabled);
         assert_eq!(
             c.skills.prompt_injection_mode,
-            SkillsPromptInjectionMode::Compact
+            SkillsPromptInjectionMode::OnDemand
         );
         assert!(c.workspace_dir.to_string_lossy().contains("workspace"));
         assert!(c.config_path.to_string_lossy().contains("config.toml"));
@@ -8886,6 +8890,7 @@ channel_id = "C123"
                 auth_token: Some("node-token".into()),
                 allowed_node_ids: vec!["node-1".into(), "node-2".into()],
             },
+            chat_log: false,
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();
@@ -9257,12 +9262,12 @@ requires_openai_auth = true
         assert!(config.skills.open_skills_dir.is_none());
         assert_eq!(
             config.skills.prompt_injection_mode,
-            SkillsPromptInjectionMode::Compact
+            SkillsPromptInjectionMode::OnDemand
         );
 
         std::env::set_var("ZEROCLAW_OPEN_SKILLS_ENABLED", "true");
         std::env::set_var("ZEROCLAW_OPEN_SKILLS_DIR", "/tmp/open-skills");
-        std::env::set_var("ZEROCLAW_SKILLS_PROMPT_MODE", "compact");
+        std::env::set_var("ZEROCLAW_SKILLS_PROMPT_MODE", "on_demand");
         config.apply_env_overrides();
 
         assert!(config.skills.open_skills_enabled);
@@ -9272,7 +9277,7 @@ requires_openai_auth = true
         );
         assert_eq!(
             config.skills.prompt_injection_mode,
-            SkillsPromptInjectionMode::Compact
+            SkillsPromptInjectionMode::OnDemand
         );
 
         std::env::remove_var("ZEROCLAW_OPEN_SKILLS_ENABLED");
@@ -9285,7 +9290,7 @@ requires_openai_auth = true
         let _env_guard = env_override_lock().await;
         let mut config = Config::default();
         config.skills.open_skills_enabled = true;
-        config.skills.prompt_injection_mode = SkillsPromptInjectionMode::Compact;
+        config.skills.prompt_injection_mode = SkillsPromptInjectionMode::OnDemand;
 
         std::env::set_var("ZEROCLAW_OPEN_SKILLS_ENABLED", "maybe");
         std::env::set_var("ZEROCLAW_SKILLS_PROMPT_MODE", "invalid");
@@ -9294,7 +9299,7 @@ requires_openai_auth = true
         assert!(config.skills.open_skills_enabled);
         assert_eq!(
             config.skills.prompt_injection_mode,
-            SkillsPromptInjectionMode::Compact
+            SkillsPromptInjectionMode::OnDemand
         );
         std::env::remove_var("ZEROCLAW_OPEN_SKILLS_ENABLED");
         std::env::remove_var("ZEROCLAW_SKILLS_PROMPT_MODE");

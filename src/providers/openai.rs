@@ -160,6 +160,14 @@ struct UsageInfo {
     prompt_tokens: Option<u64>,
     #[serde(default)]
     completion_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,6 +441,7 @@ impl Provider for OpenAiProvider {
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
+            cached_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
         let message = native_response
             .choices
@@ -507,6 +516,7 @@ impl Provider for OpenAiProvider {
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
+            cached_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
         });
         let message = native_response
             .choices
@@ -587,6 +597,7 @@ mod tests {
             ],
             temperature: 0.7,
             max_tokens: None,
+            thinking: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"role\":\"system\""));
@@ -604,6 +615,7 @@ mod tests {
             }],
             temperature: 0.0,
             max_tokens: None,
+            thinking: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("system"));

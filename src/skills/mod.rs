@@ -172,7 +172,8 @@ impl SkillLoadMode {
     fn from_prompt_mode(mode: crate::config::SkillsPromptInjectionMode) -> Self {
         match mode {
             crate::config::SkillsPromptInjectionMode::Full => Self::Full,
-            crate::config::SkillsPromptInjectionMode::Compact => Self::MetadataOnly,
+            crate::config::SkillsPromptInjectionMode::Compact
+            | crate::config::SkillsPromptInjectionMode::OnDemand => Self::MetadataOnly,
         }
     }
 }
@@ -611,6 +612,32 @@ fn load_open_skill_md(path: &Path, load_mode: SkillLoadMode) -> Result<Skill> {
 }
 
 fn extract_description(content: &str) -> String {
+    let trimmed = content.trim_start();
+    // If starts with YAML frontmatter, try to extract description field
+    if trimmed.starts_with("---") {
+        let rest = &trimmed[3..];
+        if let Some(end) = rest.find("---") {
+            let frontmatter = &rest[..end];
+            for line in frontmatter.lines() {
+                let line = line.trim();
+                if let Some(val) = line.strip_prefix("description:") {
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() {
+                        return val.to_string();
+                    }
+                }
+            }
+            // No description in frontmatter — scan body after frontmatter
+            let body = &rest[end + 3..];
+            return body
+                .lines()
+                .find(|line| !line.starts_with('#') && !line.trim().is_empty())
+                .unwrap_or("No description")
+                .trim()
+                .to_string();
+        }
+    }
+    // No frontmatter — original logic
     content
         .lines()
         .find(|line| !line.starts_with('#') && !line.trim().is_empty())
@@ -622,14 +649,42 @@ fn extract_description(content: &str) -> String {
 fn extract_description_from_markdown(path: &Path) -> Result<String> {
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
+    let mut in_frontmatter = false;
+    let mut frontmatter_started = false;
+
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
+
+        // Detect YAML frontmatter boundaries
+        if trimmed == "---" {
+            if !frontmatter_started {
+                frontmatter_started = true;
+                in_frontmatter = true;
+                continue;
+            } else if in_frontmatter {
+                in_frontmatter = false;
+                continue;
+            }
+        }
+
+        if in_frontmatter {
+            if let Some(val) = trimmed.strip_prefix("description:") {
+                let val = val.trim().trim_matches('"').trim_matches('\'');
+                if !val.is_empty() {
+                    return Ok(val.to_string());
+                }
+            }
+            continue;
+        }
+
+        // After frontmatter (or no frontmatter), find first content line
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         return Ok(trimmed.to_string());
     }
+
     Ok("No description".to_string())
 }
 
@@ -706,6 +761,13 @@ pub fn skills_to_prompt_with_mode(
              Follow these instructions directly; do not read skill files at runtime unless the user asks.\n\n\
              <available_skills>\n",
         ),
+        crate::config::SkillsPromptInjectionMode::OnDemand => String::from(
+            "## Available Skills\n\n\
+             The following skills are installed. To use a skill, call:\n\
+             \x20 skill_manage(action=\"use\", skill_name=\"<name>\")\n\
+             This returns the full instructions. Follow them carefully.\n\n\
+             <available_skills>\n",
+        ),
         crate::config::SkillsPromptInjectionMode::Compact => String::from(
             "## Available Skills\n\n\
              Skill summaries are preloaded below to keep context compact.\n\
@@ -721,7 +783,11 @@ pub fn skills_to_prompt_with_mode(
         let location = render_skill_location(
             skill,
             workspace_dir,
-            matches!(mode, crate::config::SkillsPromptInjectionMode::Compact),
+            matches!(
+                mode,
+                crate::config::SkillsPromptInjectionMode::Compact
+                    | crate::config::SkillsPromptInjectionMode::OnDemand
+            ),
         );
         write_xml_text_element(&mut prompt, 4, "location", &location);
 

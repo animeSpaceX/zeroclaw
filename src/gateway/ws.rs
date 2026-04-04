@@ -761,6 +761,7 @@ mod tests {
             Some(WsDeltaEvent::ToolCall {
                 name: "shell".to_string(),
                 hint: Some("ls -la".to_string()),
+                full_args: None,
             })
         );
     }
