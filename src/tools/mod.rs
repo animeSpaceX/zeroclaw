@@ -23,6 +23,7 @@ pub mod channel_runtime_context;
 pub mod cli_discovery;
 pub mod composio;
 pub mod content_search;
+pub mod cron_manage;
 pub mod delegate;
 pub mod delegate_coordination_status;
 pub mod file_edit;
@@ -62,6 +63,7 @@ pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
 pub use content_search::ContentSearchTool;
+pub use cron_manage::CronManageTool;
 pub use delegate::DelegateTool;
 pub use delegate_coordination_status::DelegateCoordinationStatusTool;
 pub use file_edit::FileEditTool;
@@ -388,6 +390,7 @@ pub fn all_tools_with_runtime(
                 tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(GroupManagementTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(WorkflowTriggerTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(CronManageTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(GatewayCallTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(AskUserTool::new()));
             }
