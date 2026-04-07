@@ -9,19 +9,16 @@ pub struct StorageTool {
     workspace_dir: PathBuf,
     gateway_url: String,
     team_id: String,
-    key_prefix: String,
     api_key: String,
 }
 
 impl StorageTool {
     pub fn new(workspace_dir: PathBuf, gateway_url: String, team_id: String) -> Self {
-        let key_prefix = std::env::var("AGENT_ROLE").unwrap_or_default();
         let api_key = std::env::var("PLATFORM_API_KEY").unwrap_or_default();
         Self {
             workspace_dir,
             gateway_url,
             team_id,
-            key_prefix,
             api_key,
         }
     }
@@ -32,15 +29,6 @@ impl StorageTool {
 
     fn auth_header(&self) -> (&'static str, &str) {
         ("X-API-Key", &self.api_key)
-    }
-
-    /// Prefix the key with agent role directory if AGENT_ROLE is set.
-    fn prefixed_key(&self, key: &str) -> String {
-        if self.key_prefix.is_empty() {
-            key.to_string()
-        } else {
-            format!("{}/{}", self.key_prefix, key)
-        }
     }
 
     async fn do_list(&self, prefix: &str) -> ToolResult {
@@ -222,9 +210,8 @@ impl StorageTool {
 
     async fn do_write(&self, key: &str, content: &str) -> ToolResult {
         use base64::Engine;
-        let key = self.prefixed_key(key);
         let content_b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
-        let content_type = mime_from_key(&key);
+        let content_type = mime_from_key(key);
         let size = content.len();
 
         let url = format!(
@@ -298,14 +285,13 @@ impl StorageTool {
         };
 
         let key = if remote_key.is_empty() {
-            self.prefixed_key(
-                std::path::Path::new(local_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(local_path),
-            )
+            std::path::Path::new(local_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(local_path)
+                .to_string()
         } else {
-            self.prefixed_key(remote_key)
+            remote_key.to_string()
         };
 
         use base64::Engine;

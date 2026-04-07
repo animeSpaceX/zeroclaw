@@ -329,6 +329,7 @@ impl OpenAiProvider {
             tool_calls,
             usage: None,
             reasoning_content,
+            suggestions: None,
         }
     }
 

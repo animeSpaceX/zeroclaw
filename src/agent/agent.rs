@@ -746,6 +746,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 });
             }
             Ok(guard.remove(0))
@@ -783,6 +784,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 });
             }
             Ok(guard.remove(0))
@@ -822,6 +824,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                suggestions: None,
             }]),
         });
 
@@ -862,12 +865,14 @@ mod tests {
                     }],
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 },
                 crate::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 },
             ]),
         });
@@ -909,6 +914,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                suggestions: None,
             }]),
             seen_models: seen_models.clone(),
         });

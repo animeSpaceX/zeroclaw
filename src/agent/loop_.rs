@@ -119,6 +119,9 @@ pub(crate) const DRAFT_CLEAR_SENTINEL: &str = "\x00CLEAR\x00";
 /// Channel layers can suppress these messages by default and only expose them
 /// when the user explicitly asks for command/tool execution details.
 pub(crate) const DRAFT_PROGRESS_SENTINEL: &str = "\x00PROGRESS\x00";
+/// Sentinel prefix for suggestions from the LLM response.
+/// Payload is JSON-encoded `Vec<String>` appended after the sentinel.
+pub(crate) const SUGGESTIONS_SENTINEL: &str = "\x00SUGGESTIONS\x00";
 
 tokio::task_local! {
     static TOOL_LOOP_REPLY_TARGET: Option<String>;
@@ -949,6 +952,7 @@ pub(crate) async fn run_tool_call_loop(
                         tool_calls: streamed.tool_calls,
                         usage: None,
                         reasoning_content: None,
+                        suggestions: None,
                     })
                 }
                 Err(stream_err) => {
@@ -1005,6 +1009,7 @@ pub(crate) async fn run_tool_call_loop(
             native_tool_calls,
             parse_issue_detected,
             response_streamed_live,
+            response_suggestions,
         ) = match chat_result {
             Ok(resp) => {
                 let (resp_input_tokens, resp_output_tokens, resp_cached_tokens) = resp
@@ -1108,6 +1113,7 @@ pub(crate) async fn run_tool_call_loop(
                     )
                 };
 
+                let suggestions = resp.suggestions;
                 let native_calls = resp.tool_calls;
                 (
                     response_text,
@@ -1117,6 +1123,7 @@ pub(crate) async fn run_tool_call_loop(
                     native_calls,
                     parse_issue.is_some(),
                     streamed_live_deltas,
+                    suggestions,
                 )
             }
             Err(e) => {
@@ -1258,6 +1265,15 @@ pub(crate) async fn run_tool_call_loop(
                 }),
             );
             // No tool calls — this is the final response.
+            // Send suggestions through delta channel if available.
+            if let Some(ref tx) = on_delta {
+                if let Some(ref sugg) = response_suggestions {
+                    if !sugg.is_empty() {
+                        let json = serde_json::to_string(sugg).unwrap_or_default();
+                        let _ = tx.send(format!("{SUGGESTIONS_SENTINEL}{json}")).await;
+                    }
+                }
+            }
             // If a streaming sender is provided, relay the text in small chunks
             // so the channel can progressively update the draft message.
             if let Some(ref tx) = on_delta {
@@ -1524,10 +1540,18 @@ pub(crate) async fn run_tool_call_loop(
                 }),
             );
 
+            // ── ask_user: inject _ask_id for blocking mode ─────
+            if tool_name == "ask_user" {
+                let ask_id = Uuid::new_v4().to_string();
+                if let Some(obj) = tool_args.as_object_mut() {
+                    obj.insert("_ask_id".to_string(), serde_json::json!(ask_id));
+                }
+            }
+
             // ── Progress: tool start ────────────────────────────
             if let Some(ref tx) = on_delta {
                 let progress = if tool_name == "ask_user" {
-                    // Send complete args so the frontend can render the question UI
+                    // Send complete args (including _ask_id) so the frontend can render the question UI
                     format!("\u{23f3} ask_user::{}\n", tool_args)
                 } else {
                     let hint = truncate_tool_args_for_progress(&tool_name, &tool_args, 60);
@@ -2682,6 +2706,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 usage: None,
                 reasoning_content: None,
+                suggestions: None,
             })
         }
     }
@@ -2700,6 +2725,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 })
                 .collect();
             Self {

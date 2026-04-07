@@ -462,6 +462,7 @@ impl AnthropicProvider {
             tool_calls,
             usage,
             reasoning_content: None,
+            suggestions: None,
         }
     }
 

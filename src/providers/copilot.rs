@@ -388,6 +388,7 @@ impl CopilotProvider {
             tool_calls,
             usage,
             reasoning_content: None,
+            suggestions: None,
         })
     }
 

@@ -1,19 +1,102 @@
 use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{oneshot, Mutex};
+
+/// Global registry for pending ask_user calls.
+/// Key: ask_id (UUID string), Value: oneshot sender for delivering the user's answer.
+///
+/// This is global because Tool::execute() cannot receive extra parameters,
+/// and ws.rs needs access to deliver answers from the WS layer.
+static ASK_USER_REGISTRY: std::sync::LazyLock<
+    Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+> = std::sync::LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Deliver an answer to a pending ask_user call.
+/// Returns true if the answer was delivered, false if no pending ask with that id.
+pub async fn deliver_ask_user_answer(ask_id: &str, answer: serde_json::Value) -> bool {
+    let tx = {
+        let mut registry = ASK_USER_REGISTRY.lock().await;
+        registry.remove(ask_id)
+    };
+    match tx {
+        Some(tx) => tx.send(answer).is_ok(),
+        None => false,
+    }
+}
 
 /// Tool for asking the user structured questions via interactive cards in the chat UI.
 ///
 /// Question types: single_select, multi_select, text_input, confirm, image_grid.
-/// The tool validates the question schema and returns immediately.
+/// In web/gateway mode, the tool blocks (up to 10 minutes) waiting for the user's answer.
 /// The actual question card is rendered by the frontend from the tool_call event's full args.
-/// The user's answer arrives as the next regular chat message.
 pub struct AskUserTool;
 
 impl AskUserTool {
     pub fn new() -> Self {
         Self
     }
+}
+
+/// Format user answers into readable text for the LLM.
+fn format_answers(questions: &[serde_json::Value], answers: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+    for q in questions {
+        let qid = q["id"].as_str().unwrap_or("");
+        let title = q["title"].as_str().unwrap_or(qid);
+        let answer = &answers[qid];
+        if answer.is_null() {
+            continue;
+        }
+        let qtype = q["type"].as_str().unwrap_or("");
+        let line = match qtype {
+            "confirm" => {
+                let confirmed = answer.as_bool().unwrap_or(false);
+                let yes = q["confirm_text"].as_str().unwrap_or("确认");
+                let no = q["cancel_text"].as_str().unwrap_or("取消");
+                format!("{}: {}", title, if confirmed { yes } else { no })
+            }
+            "single_select" => {
+                let selected_id = answer.as_str().unwrap_or("");
+                let label = q["options"]
+                    .as_array()
+                    .and_then(|opts| {
+                        opts.iter()
+                            .find(|o| o["id"].as_str() == Some(selected_id))
+                            .and_then(|o| o["label"].as_str())
+                    })
+                    .unwrap_or(selected_id);
+                format!("{}: {}", title, label)
+            }
+            "multi_select" | "image_grid" => {
+                let ids: Vec<&str> = answer
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                let labels: Vec<&str> = ids
+                    .iter()
+                    .map(|id| {
+                        q["options"]
+                            .as_array()
+                            .and_then(|opts| {
+                                opts.iter()
+                                    .find(|o| o["id"].as_str() == Some(id))
+                                    .and_then(|o| o["label"].as_str())
+                            })
+                            .unwrap_or(id)
+                    })
+                    .collect();
+                format!("{}: {}", title, labels.join(", "))
+            }
+            _ => {
+                format!("{}: {}", title, answer.as_str().unwrap_or(&answer.to_string()))
+            }
+        };
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 #[async_trait]
@@ -178,11 +261,64 @@ impl Tool for AskUserTool {
             }
         }
 
-        Ok(ToolResult {
-            success: true,
-            output: "已向用户展示问题卡片，请等待用户在下一条消息中回复。不要重复提问。"
-                .to_string(),
-            error: None,
-        })
+        // Check if there's a pre-registered ask_id (injected by loop_.rs before execute).
+        // If present, block waiting for the user's answer.
+        let ask_id = args
+            .get("_ask_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if let Some(ask_id) = ask_id {
+            // Register in global registry and block
+            let (tx, rx) = oneshot::channel();
+            {
+                let mut registry = ASK_USER_REGISTRY.lock().await;
+                registry.insert(ask_id.clone(), tx);
+            }
+
+            tracing::info!(ask_id = %ask_id, "ask_user: blocking, waiting for user answer (10 min timeout)");
+
+            match tokio::time::timeout(std::time::Duration::from_secs(600), rx).await {
+                Ok(Ok(answer)) => {
+                    // Clean up (already removed by deliver)
+                    let answer_text = format_answers(questions, &answer);
+                    tracing::info!(ask_id = %ask_id, "ask_user: received user answer");
+                    Ok(ToolResult {
+                        success: true,
+                        output: format!("用户已回答：\n{}", answer_text),
+                        error: None,
+                    })
+                }
+                Ok(Err(_)) => {
+                    // Channel closed (e.g. WS disconnected)
+                    let mut registry = ASK_USER_REGISTRY.lock().await;
+                    registry.remove(&ask_id);
+                    Ok(ToolResult {
+                        success: true,
+                        output: "用户未回答（连接已断开），请直接继续或换种方式处理。".to_string(),
+                        error: None,
+                    })
+                }
+                Err(_) => {
+                    // Timeout
+                    let mut registry = ASK_USER_REGISTRY.lock().await;
+                    registry.remove(&ask_id);
+                    tracing::info!(ask_id = %ask_id, "ask_user: timed out after 10 minutes");
+                    Ok(ToolResult {
+                        success: true,
+                        output: "用户在 10 分钟内未回答，请直接继续或换种方式处理。".to_string(),
+                        error: None,
+                    })
+                }
+            }
+        } else {
+            // No ask_id: non-blocking mode (CLI or legacy), return immediately
+            Ok(ToolResult {
+                success: true,
+                output: "已向用户展示问题卡片，请等待用户在下一条消息中回复。不要重复提问。"
+                    .to_string(),
+                error: None,
+            })
+        }
     }
 }

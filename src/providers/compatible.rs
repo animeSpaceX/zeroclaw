@@ -453,6 +453,9 @@ struct ApiChatResponse {
     choices: Vec<Choice>,
     #[serde(default)]
     usage: Option<UsageInfo>,
+    /// Follow-up suggestions returned by some providers (e.g. doubao/豆包).
+    #[serde(default)]
+    suggestions: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1186,6 +1189,7 @@ fn parse_responses_chat_response(response: ResponsesResponse) -> ProviderChatRes
         tool_calls,
         usage: None,
         reasoning_content: None,
+        suggestions: None,
     }
 }
 
@@ -1889,6 +1893,7 @@ impl OpenAiCompatibleProvider {
             tool_calls,
             usage: None,
             reasoning_content,
+            suggestions: None,
         }
     }
 
@@ -2264,6 +2269,7 @@ impl Provider for OpenAiCompatibleProvider {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 });
             }
         };
@@ -2320,6 +2326,7 @@ impl Provider for OpenAiCompatibleProvider {
             tool_calls,
             usage,
             reasoning_content,
+            suggestions: None,
         })
     }
 
@@ -2418,6 +2425,7 @@ impl Provider for OpenAiCompatibleProvider {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    suggestions: None,
                 });
             }
 
@@ -2457,6 +2465,7 @@ impl Provider for OpenAiCompatibleProvider {
 
         let mut result = Self::parse_native_response(message);
         result.usage = usage;
+        result.suggestions = native_response.suggestions;
         Ok(result)
     }
 

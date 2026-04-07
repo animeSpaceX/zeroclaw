@@ -10,7 +10,7 @@
 //! ```
 
 use super::AppState;
-use crate::agent::loop_::{run_tool_call_loop, DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL};
+use crate::agent::loop_::{run_tool_call_loop, DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL, SUGGESTIONS_SENTINEL};
 use crate::approval::ApprovalManager;
 use crate::providers::ChatMessage;
 use axum::{
@@ -349,13 +349,41 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     // Build system prompt once for the session
     let mut system_prompt = {
         let config_guard = state.config.lock();
-        crate::channels::build_system_prompt(
+
+        // Build tool descriptions from registered tool specs
+        let excluded = &config_guard.autonomy.non_cli_excluded_tools;
+        let tool_descs: Vec<(String, String)> = state.tools_registry
+            .iter()
+            .filter(|spec| !excluded.iter().any(|ex| ex == &spec.name))
+            .map(|spec| (spec.name.clone(), spec.description.clone()))
+            .collect();
+        let tool_descs_refs: Vec<(&str, &str)> = tool_descs
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.as_str()))
+            .collect();
+
+        // Load skills from workspace
+        let skills = crate::skills::load_skills_with_config(
+            &config_guard.workspace_dir,
+            &config_guard,
+        );
+
+        let bootstrap_max_chars = if config_guard.agent.compact_context {
+            Some(6000)
+        } else {
+            None
+        };
+        let native_tools = state.provider.supports_native_tools();
+
+        crate::channels::build_system_prompt_with_mode(
             &config_guard.workspace_dir,
             &state.model,
-            &[],
-            &[],
+            &tool_descs_refs,
+            &skills,
             Some(&config_guard.identity),
-            None,
+            bootstrap_max_chars,
+            native_tools,
+            config_guard.skills.prompt_injection_mode,
         )
     };
 
@@ -499,6 +527,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             // Run the agent loop with real-time delta streaming for web clients.
             tracing::info!(target: "ws_timing", provider = %provider_label, model = %state.model, history_len = history.len(), "🚀 Starting agent loop");
 
+            let mut pending_suggestions: Option<Vec<String>> = None;
             let result = {
                 let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(128);
                 let mut loop_future = std::pin::pin!(run_tool_call_loop(
@@ -531,7 +560,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                     tokio::select! {
                         maybe_delta = delta_rx.recv() => {
                             if let Some(delta) = maybe_delta {
-                                if let Some(event) = parse_ws_delta_event(&delta) {
+                                if let Some(json_str) = delta.strip_prefix(SUGGESTIONS_SENTINEL) {
+                                    pending_suggestions = serde_json::from_str(json_str).ok();
+                                } else if let Some(event) = parse_ws_delta_event(&delta) {
                                     emit_ws_delta_event(&mut socket, event).await;
                                 }
                             } else {
@@ -540,11 +571,36 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                         }
                         response = &mut loop_future => {
                             while let Ok(delta) = delta_rx.try_recv() {
-                                if let Some(event) = parse_ws_delta_event(&delta) {
+                                if let Some(json_str) = delta.strip_prefix(SUGGESTIONS_SENTINEL) {
+                                    pending_suggestions = serde_json::from_str(json_str).ok();
+                                } else if let Some(event) = parse_ws_delta_event(&delta) {
                                     emit_ws_delta_event(&mut socket, event).await;
                                 }
                             }
                             break response;
+                        }
+                        // Listen for incoming WS messages during agent loop (ask_user_answer)
+                        ws_msg = socket.recv() => {
+                            match ws_msg {
+                                Some(Ok(Message::Text(text))) => {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                                        let msg_type = parsed["type"].as_str().unwrap_or("");
+                                        if msg_type == "ask_user_answer" {
+                                            let ask_id = parsed["ask_id"].as_str().unwrap_or("");
+                                            if !ask_id.is_empty() {
+                                                let answers = parsed["answers"].clone();
+                                                crate::tools::ask_user::deliver_ask_user_answer(ask_id, answers).await;
+                                            }
+                                        }
+                                        // Other message types during loop are ignored
+                                    }
+                                }
+                                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                                    // WS closed while loop is running — loop will
+                                    // finish on its own (ask_user will timeout)
+                                }
+                                _ => {}
+                            }
                         }
                         () = &mut slow_timer, if !slow_hint_sent => {
                             slow_hint_sent = true;
@@ -596,6 +652,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                     let done = serde_json::json!({
                         "type": "done",
                         "full_response": safe_response,
+                        "suggestions": pending_suggestions,
                     });
                     let _ = socket.send(Message::Text(done.to_string().into())).await;
 
@@ -641,7 +698,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     // ── Session ended — spawn background observation extraction ──
     {
         let config_guard = state.config.lock();
-        if config_guard.memory.extraction_enabled && turn_count > 0 {
+        if config_guard.memory.extraction_enabled && turn_count > 1 {
             let history_snapshot = history.clone();
             let workspace_dir = config_guard.workspace_dir.clone();
             let session_id_clone = session_id.clone();
