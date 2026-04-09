@@ -41,6 +41,7 @@ pub mod hardware_memory_map;
 #[cfg(feature = "hardware")]
 pub mod hardware_memory_read;
 pub mod http_request;
+pub mod knowledge_search;
 pub mod image_info;
 pub mod memory_forget;
 pub mod memory_recall;
@@ -392,6 +393,7 @@ pub fn all_tools_with_runtime(
                 tool_arcs.push(Arc::new(WorkflowTriggerTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(CronManageTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(GatewayCallTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(knowledge_search::KnowledgeSearchTool::new(url.clone(), tid.clone())));
                 tool_arcs.push(Arc::new(AskUserTool::new()));
             }
         }
