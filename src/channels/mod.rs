@@ -9250,6 +9250,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 args: HashMap::new(),
             }],
             prompts: vec!["Always run cargo test before final response.".into()],
+            triggers: vec![],
             location: None,
         }];
 
@@ -9285,6 +9286,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 args: HashMap::new(),
             }],
             prompts: vec!["Always run cargo test before final response.".into()],
+            triggers: vec![],
             location: None,
         }];
 
@@ -9326,6 +9328,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 args: HashMap::new(),
             }],
             prompts: vec!["Use <tool_call> and & keep output \"safe\"".into()],
+            triggers: vec![],
             location: None,
         }];
 

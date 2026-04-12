@@ -2617,9 +2617,38 @@ impl Provider for OpenAiCompatibleProvider {
             }
 
             let mut event_stream = sse_bytes_to_events(response, count_tokens);
-            while let Some(event) = event_stream.next().await {
-                if tx.send(event).await.is_err() {
-                    break;
+            let chunk_timeout = std::time::Duration::from_secs(60);
+            let stream_start = std::time::Instant::now();
+            let mut chunk_count: u64 = 0;
+            loop {
+                match tokio::time::timeout(chunk_timeout, event_stream.next()).await {
+                    Ok(Some(event)) => {
+                        chunk_count += 1;
+                        if tx.send(event).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!(
+                            target: "stream_health",
+                            chunk_count,
+                            elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                            "SSE event stream ended normally"
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::error!(
+                            target: "stream_health",
+                            chunk_count,
+                            elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                            "SSE event stream stalled for 60s with no data, aborting"
+                        );
+                        let _ = tx.send(Err(StreamError::Provider(
+                            "stream read timeout: no data for 60s".into(),
+                        ))).await;
+                        break;
+                    }
                 }
             }
         });
@@ -2722,9 +2751,38 @@ impl Provider for OpenAiCompatibleProvider {
 
             // Convert to chunk stream and forward to channel
             let mut chunk_stream = sse_bytes_to_chunks(response, options.count_tokens);
-            while let Some(chunk) = chunk_stream.next().await {
-                if tx.send(chunk).await.is_err() {
-                    break; // Receiver dropped
+            let chunk_timeout = std::time::Duration::from_secs(60);
+            let stream_start = std::time::Instant::now();
+            let mut chunk_count: u64 = 0;
+            loop {
+                match tokio::time::timeout(chunk_timeout, chunk_stream.next()).await {
+                    Ok(Some(chunk)) => {
+                        chunk_count += 1;
+                        if tx.send(chunk).await.is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!(
+                            target: "stream_health",
+                            chunk_count,
+                            elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                            "SSE chunk stream ended normally"
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::error!(
+                            target: "stream_health",
+                            chunk_count,
+                            elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                            "SSE chunk stream stalled for 60s with no data, aborting"
+                        );
+                        let _ = tx.send(Err(StreamError::Provider(
+                            "stream read timeout: no data for 60s".into(),
+                        ))).await;
+                        break;
+                    }
                 }
             }
         });

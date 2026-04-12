@@ -114,6 +114,8 @@ pub struct Skill {
     pub tools: Vec<SkillTool>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    #[serde(default)]
+    pub triggers: Vec<String>,
     #[serde(skip)]
     pub location: Option<PathBuf>,
 }
@@ -536,6 +538,7 @@ fn load_skill_toml(path: &Path, load_mode: SkillLoadMode) -> Result<Skill> {
                 tags: manifest.skill.tags,
                 tools: manifest.tools,
                 prompts: manifest.prompts,
+                triggers: Vec::new(),
                 location: Some(path.to_path_buf()),
             })
         }
@@ -550,6 +553,7 @@ fn load_skill_toml(path: &Path, load_mode: SkillLoadMode) -> Result<Skill> {
                 tags: manifest.skill.tags,
                 tools: Vec::new(),
                 prompts: Vec::new(),
+                triggers: Vec::new(),
                 location: Some(path.to_path_buf()),
             })
         }
@@ -564,12 +568,18 @@ fn load_skill_md(path: &Path, dir: &Path, load_mode: SkillLoadMode) -> Result<Sk
         .unwrap_or("unknown")
         .to_string();
 
-    let (description, prompts) = match load_mode {
+    let (description, prompts, triggers) = match load_mode {
         SkillLoadMode::Full => {
             let content = std::fs::read_to_string(path)?;
-            (extract_description(&content), vec![content])
+            let desc = extract_description(&content);
+            let trigs = extract_triggers(&content);
+            (desc, vec![content], trigs)
         }
-        SkillLoadMode::MetadataOnly => (extract_description_from_markdown(path)?, Vec::new()),
+        SkillLoadMode::MetadataOnly => {
+            let desc = extract_description_from_markdown(path)?;
+            let trigs = extract_triggers_from_markdown(path);
+            (desc, Vec::new(), trigs)
+        }
     };
 
     Ok(Skill {
@@ -580,6 +590,7 @@ fn load_skill_md(path: &Path, dir: &Path, load_mode: SkillLoadMode) -> Result<Sk
         tags: Vec::new(),
         tools: Vec::new(),
         prompts,
+        triggers,
         location: Some(path.to_path_buf()),
     })
 }
@@ -591,12 +602,18 @@ fn load_open_skill_md(path: &Path, load_mode: SkillLoadMode) -> Result<Skill> {
         .unwrap_or("open-skill")
         .to_string();
 
-    let (description, prompts) = match load_mode {
+    let (description, prompts, triggers) = match load_mode {
         SkillLoadMode::Full => {
             let content = std::fs::read_to_string(path)?;
-            (extract_description(&content), vec![content])
+            let desc = extract_description(&content);
+            let trigs = extract_triggers(&content);
+            (desc, vec![content], trigs)
         }
-        SkillLoadMode::MetadataOnly => (extract_description_from_markdown(path)?, Vec::new()),
+        SkillLoadMode::MetadataOnly => {
+            let desc = extract_description_from_markdown(path)?;
+            let trigs = extract_triggers_from_markdown(path);
+            (desc, Vec::new(), trigs)
+        }
     };
 
     Ok(Skill {
@@ -607,6 +624,7 @@ fn load_open_skill_md(path: &Path, load_mode: SkillLoadMode) -> Result<Skill> {
         tags: vec!["open-skills".to_string()],
         tools: Vec::new(),
         prompts,
+        triggers,
         location: Some(path.to_path_buf()),
     })
 }
@@ -686,6 +704,127 @@ fn extract_description_from_markdown(path: &Path) -> Result<String> {
     }
 
     Ok("No description".to_string())
+}
+
+/// Extract `triggers` list from YAML frontmatter.
+///
+/// Supports two formats:
+/// ```yaml
+/// triggers:
+///   - keyword1
+///   - keyword2
+/// ```
+/// or inline: `triggers: [keyword1, keyword2]`
+fn extract_triggers(content: &str) -> Vec<String> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return Vec::new();
+    }
+    let rest = &trimmed[3..];
+    let Some(end) = rest.find("---") else {
+        return Vec::new();
+    };
+    let frontmatter = &rest[..end];
+
+    let mut triggers = Vec::new();
+    let mut in_triggers_block = false;
+
+    for line in frontmatter.lines() {
+        let trimmed_line = line.trim();
+
+        // Check for inline array format: triggers: [a, b, c]
+        if let Some(val) = trimmed_line.strip_prefix("triggers:") {
+            let val = val.trim();
+            if val.starts_with('[') && val.ends_with(']') {
+                let inner = &val[1..val.len() - 1];
+                for item in inner.split(',') {
+                    let item = item.trim().trim_matches('"').trim_matches('\'').trim();
+                    if !item.is_empty() {
+                        triggers.push(item.to_string());
+                    }
+                }
+                return triggers;
+            }
+            // Start of multi-line triggers block
+            in_triggers_block = true;
+            continue;
+        }
+
+        if in_triggers_block {
+            if let Some(item) = trimmed_line.strip_prefix("- ") {
+                let item = item.trim().trim_matches('"').trim_matches('\'').trim();
+                if !item.is_empty() {
+                    triggers.push(item.to_string());
+                }
+            } else if !trimmed_line.is_empty() && !trimmed_line.starts_with('#') {
+                // End of triggers block (next field)
+                break;
+            }
+        }
+    }
+
+    triggers
+}
+
+/// Extract triggers from a SKILL.md file by reading only the frontmatter portion.
+fn extract_triggers_from_markdown(path: &Path) -> Vec<String> {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut in_frontmatter = false;
+    let mut frontmatter_started = false;
+    let mut in_triggers_block = false;
+    let mut triggers = Vec::new();
+
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        let trimmed = line.trim();
+
+        if trimmed == "---" {
+            if !frontmatter_started {
+                frontmatter_started = true;
+                in_frontmatter = true;
+                continue;
+            } else if in_frontmatter {
+                break; // end of frontmatter
+            }
+        }
+
+        if !in_frontmatter {
+            continue;
+        }
+
+        if let Some(val) = trimmed.strip_prefix("triggers:") {
+            let val = val.trim();
+            if val.starts_with('[') && val.ends_with(']') {
+                let inner = &val[1..val.len() - 1];
+                for item in inner.split(',') {
+                    let item = item.trim().trim_matches('"').trim_matches('\'').trim();
+                    if !item.is_empty() {
+                        triggers.push(item.to_string());
+                    }
+                }
+                return triggers;
+            }
+            in_triggers_block = true;
+            continue;
+        }
+
+        if in_triggers_block {
+            if let Some(item) = trimmed.strip_prefix("- ") {
+                let item = item.trim().trim_matches('"').trim_matches('\'').trim();
+                if !item.is_empty() {
+                    triggers.push(item.to_string());
+                }
+            } else if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                in_triggers_block = false;
+            }
+        }
+    }
+
+    triggers
 }
 
 fn append_xml_escaped(out: &mut String, text: &str) {
@@ -818,6 +957,38 @@ pub fn skills_to_prompt_with_mode(
 
     prompt.push_str("</available_skills>");
     prompt
+}
+
+/// Check if a user message matches any skill's triggers or name.
+/// Returns all matching skills.
+pub fn match_skill_triggers<'a>(skills: &'a [Skill], user_message: &str) -> Vec<&'a Skill> {
+    let msg_lower = user_message.to_lowercase();
+    skills
+        .iter()
+        .filter(|s| {
+            // Match skill name
+            if msg_lower.contains(&s.name.to_lowercase()) {
+                return true;
+            }
+            // Match triggers
+            s.triggers
+                .iter()
+                .any(|t| msg_lower.contains(&t.to_lowercase()))
+        })
+        .collect()
+}
+
+/// Read a skill's full SKILL.md content, returning `<skill_instructions>` XML-wrapped text.
+pub fn load_skill_instructions(skill: &Skill) -> Option<String> {
+    let location = skill.location.as_ref()?;
+    let skill_dir = location.parent()?;
+    let content = std::fs::read_to_string(location).ok()?;
+    let abs_dir = skill_dir.to_string_lossy();
+    let content = content.replace("{baseDir}", &abs_dir);
+    Some(format!(
+        "<skill_instructions name=\"{}\" dir=\"{}\">\n\n{}\n\n</skill_instructions>",
+        skill.name, abs_dir, content
+    ))
 }
 
 /// Get the skills directory path
@@ -1750,6 +1921,7 @@ prompts = ["Do not preload me"]
             tags: vec![],
             tools: vec![],
             prompts: vec!["Do the thing.".to_string()],
+            triggers: vec![],
             location: None,
         }];
         let prompt = skills_to_prompt(&skills, Path::new("/tmp"));
@@ -1774,6 +1946,7 @@ prompts = ["Do not preload me"]
                 args: HashMap::new(),
             }],
             prompts: vec!["Do the thing.".to_string()],
+            triggers: vec![],
             location: Some(PathBuf::from("/tmp/workspace/skills/test/SKILL.md")),
         }];
         let prompt = skills_to_prompt_with_mode(
@@ -2003,6 +2176,7 @@ description = "Bare minimum"
                 args: HashMap::new(),
             }],
             prompts: vec![],
+            triggers: vec![],
             location: None,
         }];
         let prompt = skills_to_prompt(&skills, Path::new("/tmp"));
@@ -2022,6 +2196,7 @@ description = "Bare minimum"
             tags: vec![],
             tools: vec![],
             prompts: vec!["Use <tool> & check \"quotes\".".to_string()],
+            triggers: vec![],
             location: None,
         }];
 

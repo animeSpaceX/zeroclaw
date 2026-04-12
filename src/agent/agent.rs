@@ -554,6 +554,16 @@ impl Agent {
             _ => stamped_user_message,
         };
 
+        // Auto-trigger skill injection: match user message against skill triggers/names
+        let matched = crate::skills::match_skill_triggers(&self.skills, user_message);
+        for skill in &matched {
+            if let Some(instructions) = crate::skills::load_skill_instructions(skill) {
+                self.history
+                    .push(ConversationMessage::Chat(ChatMessage::system(&instructions)));
+                tracing::info!(skill = %skill.name, "🎯 Auto-injected skill via trigger match");
+            }
+        }
+
         self.history
             .push(ConversationMessage::Chat(ChatMessage::user(enriched)));
 

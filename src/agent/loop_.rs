@@ -564,11 +564,22 @@ async fn consume_provider_streaming_response(
     let mut delta_sender = on_delta;
     let mut suppress_forwarding = false;
     let mut marker_window = String::new();
+    let stream_start = std::time::Instant::now();
+    let mut chunk_count: u64 = 0;
+    let mut last_chunk_time = stream_start;
 
     loop {
         let next_chunk = if let Some(token) = cancellation_token {
             tokio::select! {
-                () = token.cancelled() => return Err(ToolLoopCancelled.into()),
+                () = token.cancelled() => {
+                    tracing::warn!(
+                        target: "stream_health",
+                        chunks_received = chunk_count,
+                        elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                        "Provider stream cancelled via token"
+                    );
+                    return Err(ToolLoopCancelled.into());
+                },
                 chunk = provider_stream.next() => chunk,
             }
         } else {
@@ -576,10 +587,39 @@ async fn consume_provider_streaming_response(
         };
 
         let Some(event_result) = next_chunk else {
+            tracing::debug!(
+                target: "stream_health",
+                chunks_received = chunk_count,
+                elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                "Provider stream ended normally"
+            );
             break;
         };
 
-        let event = event_result.map_err(|err| anyhow::anyhow!("provider stream error: {err}"))?;
+        // Log if there was a long gap between chunks (potential stall indicator)
+        let gap_ms = last_chunk_time.elapsed().as_millis() as u64;
+        if gap_ms > 30_000 {
+            tracing::warn!(
+                target: "stream_health",
+                chunk_count,
+                gap_ms,
+                elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                "Long gap between stream chunks (>30s)"
+            );
+        }
+        chunk_count += 1;
+        last_chunk_time = std::time::Instant::now();
+
+        let event = event_result.map_err(|err| {
+            tracing::error!(
+                target: "stream_health",
+                chunk_count,
+                elapsed_ms = stream_start.elapsed().as_millis() as u64,
+                error = %err,
+                "Provider stream error"
+            );
+            anyhow::anyhow!("provider stream error: {err}")
+        })?;
         match event {
             StreamEvent::Final => break,
             StreamEvent::ToolCall(tool_call) => {

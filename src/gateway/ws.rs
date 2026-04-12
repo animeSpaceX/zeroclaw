@@ -24,10 +24,15 @@ use axum::{
 };
 use serde_json::json;
 use std::path::Path;
+use tokio_util::sync::CancellationToken;
 
 const EMPTY_WS_RESPONSE_FALLBACK: &str =
     "Tool execution completed, but the model returned no final text response. Please ask me to summarize the result.";
 const WS_CHAT_SUBPROTOCOL: &str = "zeroclaw.v1";
+
+/// Maximum wall-clock time for a single agent tool loop execution via WS.
+/// After this, the loop is cancelled and the WS returns a timeout error.
+const WS_TOOL_LOOP_TIMEOUT_SECS: u64 = 600; // 10 minutes
 
 /// Append a chat log entry to `chat.jsonl` in the given config directory.
 fn append_chat_log(config_dir: &Path, entry: &serde_json::Value) {
@@ -346,8 +351,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut turn_count: u32 = 0;
 
-    // Build system prompt once for the session
-    let mut system_prompt = {
+    // Build system prompt once for the session; keep skills for trigger matching
+    let (mut system_prompt, session_skills) = {
         let config_guard = state.config.lock();
 
         // Build tool descriptions from registered tool specs
@@ -375,7 +380,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
         };
         let native_tools = state.provider.supports_native_tools();
 
-        crate::channels::build_system_prompt_with_mode(
+        let prompt = crate::channels::build_system_prompt_with_mode(
             &config_guard.workspace_dir,
             &state.model,
             &tool_descs_refs,
@@ -384,7 +389,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             bootstrap_max_chars,
             native_tools,
             config_guard.skills.prompt_injection_mode,
-        )
+        );
+
+        (prompt, skills)
     };
 
     // Inject observation context from previous sessions (Phase 2: intelligent memory)
@@ -491,6 +498,15 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
         };
 
         {
+            // Auto-trigger skill injection: match user message against skill triggers/names
+            let matched = crate::skills::match_skill_triggers(&session_skills, &content);
+            for skill in &matched {
+                if let Some(instructions) = crate::skills::load_skill_instructions(skill) {
+                    history.push(ChatMessage::system(&instructions));
+                    tracing::info!(skill = %skill.name, "🎯 Auto-injected skill via trigger match");
+                }
+            }
+
             // Add user message to history
             history.push(ChatMessage::user(&content));
             turn_count += 1;
@@ -528,6 +544,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             tracing::info!(target: "ws_timing", provider = %provider_label, model = %state.model, history_len = history.len(), "🚀 Starting agent loop");
 
             let mut pending_suggestions: Option<Vec<String>> = None;
+            let cancel_token = CancellationToken::new();
             let result = {
                 let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(128);
                 let mut loop_future = std::pin::pin!(run_tool_call_loop(
@@ -543,11 +560,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                     "webchat",
                     &state.multimodal,
                     state.max_tool_iterations,
-                    None,           // cancellation token
+                    Some(cancel_token.clone()),
                     Some(delta_tx), // delta streaming
                     None,           // hooks
                     &[],            // excluded tools
                 ));
+
+                // Overall timeout for the entire tool loop
+                let overall_deadline = tokio::time::sleep(
+                    std::time::Duration::from_secs(WS_TOOL_LOOP_TIMEOUT_SECS),
+                );
+                tokio::pin!(overall_deadline);
 
                 // Slow-response hint: if agent loop produces no deltas for 10s,
                 // send a friendly message to the client.
@@ -617,6 +640,22 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                                     "content": hint,
                                 }).to_string().into()
                             )).await;
+                        }
+                        () = &mut overall_deadline => {
+                            let elapsed = msg_recv_time.elapsed().as_secs();
+                            tracing::error!(
+                                target: "ws_timing",
+                                provider = %provider_label,
+                                model = %state.model,
+                                elapsed_secs = elapsed,
+                                timeout = WS_TOOL_LOOP_TIMEOUT_SECS,
+                                "⏰ Agent tool loop hit overall timeout, cancelling"
+                            );
+                            cancel_token.cancel();
+                            break Err(anyhow::anyhow!(
+                                "agent tool loop timed out after {}s",
+                                WS_TOOL_LOOP_TIMEOUT_SECS
+                            ));
                         }
                     }
                 }
