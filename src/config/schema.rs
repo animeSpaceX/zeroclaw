@@ -290,9 +290,9 @@ pub struct PlatformConnectConfig {
     /// Platform gateway URL (e.g. "http://127.0.0.1:42600").
     #[serde(default)]
     pub gateway_url: Option<String>,
-    /// Team ID this agent belongs to.
-    #[serde(default)]
-    pub team_id: Option<String>,
+    /// Agent ID (UUID) assigned by the platform.
+    #[serde(default, alias = "team_id")]
+    pub agent_id: Option<String>,
     /// Agent role within the team.
     #[serde(default)]
     pub agent_role: Option<String>,

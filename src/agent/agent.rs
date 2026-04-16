@@ -401,30 +401,54 @@ impl Agent {
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
         let start = Instant::now();
 
+        tracing::info!(tool = %call.name, args = %call.arguments, "tool_call: start");
+
         let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
             match tool.execute(call.arguments.clone()).await {
                 Ok(r) => {
+                    let duration = start.elapsed();
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
-                        duration: start.elapsed(),
+                        duration,
                         success: r.success,
                     });
                     if r.success {
+                        tracing::info!(
+                            tool = %call.name, success = true,
+                            duration_ms = duration.as_millis() as u64,
+                            output_len = r.output.len(),
+                            "tool_call: done"
+                        );
                         r.output
                     } else {
-                        format!("Error: {}", r.error.unwrap_or(r.output))
+                        let reason = r.error.unwrap_or(r.output);
+                        tracing::warn!(
+                            tool = %call.name, success = false,
+                            duration_ms = duration.as_millis() as u64,
+                            error = %reason,
+                            "tool_call: failed"
+                        );
+                        format!("Error: {reason}")
                     }
                 }
                 Err(e) => {
+                    let duration = start.elapsed();
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
-                        duration: start.elapsed(),
+                        duration,
                         success: false,
                     });
+                    tracing::error!(
+                        tool = %call.name,
+                        duration_ms = duration.as_millis() as u64,
+                        error = %e,
+                        "tool_call: exception"
+                    );
                     format!("Error executing {}: {e}", call.name)
                 }
             }
         } else {
+            tracing::warn!(tool = %call.name, "tool_call: unknown tool");
             format!("Unknown tool: {}", call.name)
         };
 

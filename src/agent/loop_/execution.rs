@@ -22,6 +22,9 @@ async fn execute_one_tool(
     });
     let start = Instant::now();
 
+    // Centralized tool call logging — covers all tools uniformly
+    tracing::info!(tool = call_name, args = %call_arguments, "tool_call: start");
+
     let Some(tool) = find_tool(tools_registry, call_name) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
@@ -57,6 +60,13 @@ async fn execute_one_tool(
                 success: r.success,
             });
             if r.success {
+                tracing::info!(
+                    tool = call_name,
+                    success = true,
+                    duration_ms = duration.as_millis() as u64,
+                    output_len = r.output.len(),
+                    "tool_call: done"
+                );
                 Ok(ToolExecutionOutcome {
                     output: scrub_credentials(&r.output),
                     success: true,
@@ -65,6 +75,13 @@ async fn execute_one_tool(
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
+                tracing::warn!(
+                    tool = call_name,
+                    success = false,
+                    duration_ms = duration.as_millis() as u64,
+                    error = %reason,
+                    "tool_call: failed"
+                );
                 Ok(ToolExecutionOutcome {
                     output: format!("Error: {reason}"),
                     success: false,
@@ -81,6 +98,12 @@ async fn execute_one_tool(
                 success: false,
             });
             let reason = format!("Error executing {call_name}: {e}");
+            tracing::error!(
+                tool = call_name,
+                duration_ms = duration.as_millis() as u64,
+                error = %e,
+                "tool_call: exception"
+            );
             Ok(ToolExecutionOutcome {
                 output: reason.clone(),
                 success: false,

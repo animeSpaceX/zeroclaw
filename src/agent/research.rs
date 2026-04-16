@@ -254,6 +254,9 @@ async fn execute_tool_call(tools: &[Box<dyn Tool>], tool_call: &ToolCall) -> Too
     // Find the tool
     let tool = tools.iter().find(|t| t.name() == tool_call.name);
 
+    tracing::info!(tool = %tool_call.name, args = %tool_call.arguments, "tool_call: start");
+    let start = std::time::Instant::now();
+
     match tool {
         Some(t) => {
             // Parse arguments
@@ -262,19 +265,48 @@ async fn execute_tool_call(tools: &[Box<dyn Tool>], tool_call: &ToolCall) -> Too
 
             // Execute
             match t.execute(args).await {
-                Ok(result) => result,
-                Err(e) => ToolResult {
-                    success: false,
-                    output: format!("Error: {}", e),
-                    error: Some(e.to_string()),
-                },
+                Ok(result) => {
+                    let duration = start.elapsed();
+                    if result.success {
+                        tracing::info!(
+                            tool = %tool_call.name, success = true,
+                            duration_ms = duration.as_millis() as u64,
+                            output_len = result.output.len(),
+                            "tool_call: done"
+                        );
+                    } else {
+                        tracing::warn!(
+                            tool = %tool_call.name, success = false,
+                            duration_ms = duration.as_millis() as u64,
+                            error = result.error.as_deref().unwrap_or(""),
+                            "tool_call: failed"
+                        );
+                    }
+                    result
+                }
+                Err(e) => {
+                    tracing::error!(
+                        tool = %tool_call.name,
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        error = %e,
+                        "tool_call: exception"
+                    );
+                    ToolResult {
+                        success: false,
+                        output: format!("Error: {}", e),
+                        error: Some(e.to_string()),
+                    }
+                }
             }
         }
-        None => ToolResult {
-            success: false,
-            output: format!("Unknown tool: {}", tool_call.name),
-            error: Some(format!("Unknown tool: {}", tool_call.name)),
-        },
+        None => {
+            tracing::warn!(tool = %tool_call.name, "tool_call: unknown tool");
+            ToolResult {
+                success: false,
+                output: format!("Unknown tool: {}", tool_call.name),
+                error: Some(format!("Unknown tool: {}", tool_call.name)),
+            }
+        }
     }
 }
 

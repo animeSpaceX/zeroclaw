@@ -362,14 +362,15 @@ pub fn all_tools_with_runtime(
         }
     }
 
-    // Team cloud storage (active when running under platform gateway)
+    // Cloud storage (active when running under platform gateway)
+    // Cloud storage (active when running under platform gateway)
     // NOTE: registered BEFORE delegation so subagents can access these via parent_tools
-    if let (Ok(gw_port), Ok(team_id)) = (std::env::var("GATEWAY_PORT"), std::env::var("TEAM_ID")) {
+    if let (Ok(gw_port), Ok(agent_id)) = (std::env::var("GATEWAY_PORT"), std::env::var("AGENT_ID").or_else(|_| std::env::var("TEAM_ID"))) {
         let gateway_url = format!("http://127.0.0.1:{gw_port}");
         tool_arcs.push(Arc::new(StorageTool::new(
             workspace_dir.to_path_buf(),
             gateway_url,
-            team_id,
+            agent_id,
         )));
     }
 
@@ -378,22 +379,22 @@ pub fn all_tools_with_runtime(
     {
         let platform = &root_config.platform;
         if platform.enabled {
-            if let (Some(url), Some(tid), Some(_role)) = (
+            if let (Some(url), Some(agent_id), Some(_role)) = (
                 &platform.gateway_url,
-                &platform.team_id,
+                &platform.agent_id,
                 &platform.agent_role,
             ) {
                 tool_arcs.push(Arc::new(SkillManageTool::new(
                     url.clone(),
-                    tid.clone(),
+                    agent_id.clone(),
                     workspace_dir.to_path_buf(),
                 )));
-                tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), tid.clone())));
-                tool_arcs.push(Arc::new(GroupManagementTool::new(url.clone(), tid.clone())));
-                tool_arcs.push(Arc::new(WorkflowTriggerTool::new(url.clone(), tid.clone())));
-                tool_arcs.push(Arc::new(CronManageTool::new(url.clone(), tid.clone())));
-                tool_arcs.push(Arc::new(GatewayCallTool::new(url.clone(), tid.clone())));
-                tool_arcs.push(Arc::new(knowledge_search::KnowledgeSearchTool::new(url.clone(), tid.clone())));
+                tool_arcs.push(Arc::new(TaskManagementTool::new(url.clone(), agent_id.clone())));
+                tool_arcs.push(Arc::new(GroupManagementTool::new(url.clone(), agent_id.clone())));
+                tool_arcs.push(Arc::new(WorkflowTriggerTool::new(url.clone(), agent_id.clone())));
+                tool_arcs.push(Arc::new(CronManageTool::new(url.clone(), agent_id.clone())));
+                tool_arcs.push(Arc::new(GatewayCallTool::new(url.clone(), agent_id.clone())));
+                tool_arcs.push(Arc::new(knowledge_search::KnowledgeSearchTool::new(url.clone(), agent_id.clone())));
                 tool_arcs.push(Arc::new(AskUserTool::new()));
             }
         }

@@ -8,17 +8,17 @@ const MAX_READ_BYTES: usize = 512 * 1024; // 512 KB
 pub struct StorageTool {
     workspace_dir: PathBuf,
     gateway_url: String,
-    team_id: String,
+    agent_id: String,
     api_key: String,
 }
 
 impl StorageTool {
-    pub fn new(workspace_dir: PathBuf, gateway_url: String, team_id: String) -> Self {
+    pub fn new(workspace_dir: PathBuf, gateway_url: String, agent_id: String) -> Self {
         let api_key = std::env::var("PLATFORM_API_KEY").unwrap_or_default();
         Self {
             workspace_dir,
             gateway_url,
-            team_id,
+            agent_id,
             api_key,
         }
     }
@@ -35,7 +35,7 @@ impl StorageTool {
         let url = format!(
             "{}/api/teams/{}/storage?prefix={}",
             self.gateway_url,
-            self.team_id,
+            self.agent_id,
             urlencoding::encode(prefix)
         );
 
@@ -43,6 +43,7 @@ impl StorageTool {
         let resp = client
             .get(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;
@@ -115,7 +116,7 @@ impl StorageTool {
         let url = format!(
             "{}/api/teams/{}/storage/file/{}",
             self.gateway_url,
-            self.team_id,
+            self.agent_id,
             urlencoding::encode(key)
         );
 
@@ -123,6 +124,7 @@ impl StorageTool {
         let resp = client
             .get(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;
@@ -216,13 +218,14 @@ impl StorageTool {
 
         let url = format!(
             "{}/api/teams/{}/storage/upload",
-            self.gateway_url, self.team_id
+            self.gateway_url, self.agent_id
         );
 
         let client = reqwest::Client::new();
         let resp = client
             .post(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .json(&json!({
                 "key": key,
                 "content_base64": content_b64,
@@ -301,13 +304,14 @@ impl StorageTool {
 
         let url = format!(
             "{}/api/teams/{}/storage/upload",
-            self.gateway_url, self.team_id
+            self.gateway_url, self.agent_id
         );
 
         let client = reqwest::Client::new();
         let resp = client
             .post(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .json(&json!({
                 "key": key,
                 "content_base64": content_b64,
@@ -362,7 +366,7 @@ impl StorageTool {
         let url = format!(
             "{}/api/teams/{}/storage/file/{}",
             self.gateway_url,
-            self.team_id,
+            self.agent_id,
             urlencoding::encode(key)
         );
 
@@ -370,6 +374,7 @@ impl StorageTool {
         let resp = client
             .get(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(60))
             .send()
             .await;
@@ -431,7 +436,7 @@ impl StorageTool {
         let url = format!(
             "{}/api/teams/{}/storage/file/{}",
             self.gateway_url,
-            self.team_id,
+            self.agent_id,
             urlencoding::encode(key)
         );
 
@@ -439,6 +444,7 @@ impl StorageTool {
         let resp = client
             .delete(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await;

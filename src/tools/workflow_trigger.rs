@@ -6,16 +6,16 @@ use serde_json::json;
 /// cascade automation (e.g. A → B → C pipelines).
 pub struct WorkflowTriggerTool {
     gateway_url: String,
-    team_id: String,
+    agent_id: String,
     api_key: String,
 }
 
 impl WorkflowTriggerTool {
-    pub fn new(gateway_url: String, team_id: String) -> Self {
+    pub fn new(gateway_url: String, agent_id: String) -> Self {
         let api_key = std::env::var("PLATFORM_API_KEY").unwrap_or_default();
         Self {
             gateway_url,
-            team_id,
+            agent_id,
             api_key,
         }
     }
@@ -30,6 +30,7 @@ impl WorkflowTriggerTool {
         let mut req = reqwest::Client::new()
             .request(method, &url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(30));
         if let Some(b) = body {
             req = req.json(&b);
