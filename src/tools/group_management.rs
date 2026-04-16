@@ -6,17 +6,20 @@ use serde_json::json;
 /// create/delete groups, manage members (users + agents), update settings.
 pub struct GroupManagementTool {
     gateway_url: String,
-    team_id: String,
+    agent_id: String,
     api_key: String,
+    conversation_id: String,
 }
 
 impl GroupManagementTool {
-    pub fn new(gateway_url: String, team_id: String) -> Self {
+    pub fn new(gateway_url: String, agent_id: String) -> Self {
         let api_key = std::env::var("PLATFORM_API_KEY").unwrap_or_default();
+        let conversation_id = std::env::var("CONVERSATION_ID").unwrap_or_default();
         Self {
             gateway_url,
-            team_id,
+            agent_id,
             api_key,
+            conversation_id,
         }
     }
 
@@ -24,17 +27,18 @@ impl GroupManagementTool {
         reqwest::Client::new()
     }
 
-    /// Resolve the owner user_id from TEAM_ID by querying the gateway.
+    /// Resolve the owner user_id from agent_id by querying the gateway.
     async fn resolve_owner_user_id(&self) -> Option<String> {
         let url = format!(
             "{}/api/teams/{}",
             self.gateway_url.trim_end_matches('/'),
-            self.team_id
+            self.agent_id
         );
         let resp = self
             .client()
             .get(&url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
@@ -61,6 +65,7 @@ impl GroupManagementTool {
             .client()
             .request(method, &url)
             .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
             .timeout(std::time::Duration::from_secs(30));
         if let Some(b) = body {
             req = req.json(&b);
@@ -115,13 +120,10 @@ impl Tool for GroupManagementTool {
                     "enum": [
                         "list_groups", "create_group", "delete_group", "update_group",
                         "list_members", "invite_agent", "remove_agent",
-                        "invite_user", "list_roles", "dispatch", "update_member_profile"
+                        "invite_user", "list_roles", "dispatch", "update_member_profile",
+                        "lock_routing", "unlock_routing"
                     ],
                     "description": "The operation to perform"
-                },
-                "conversation_id": {
-                    "type": "string",
-                    "description": "Group conversation ID (from the [群聊: ... | conversation_id: xxx] context header). Required for all actions except create_group."
                 },
                 "name": {
                     "type": "string",
@@ -169,6 +171,10 @@ impl Tool for GroupManagementTool {
                 "notes": {
                     "type": "string",
                     "description": "Notes/remarks about the member for update_member_profile"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for lock_routing (e.g. '辩论赛进行中')"
                 }
             },
             "required": ["action"]
@@ -177,7 +183,7 @@ impl Tool for GroupManagementTool {
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let action = args["action"].as_str().unwrap_or("");
-        let conv_id = args["conversation_id"].as_str().unwrap_or("");
+        let conv_id = self.conversation_id.as_str();
 
         match action {
             "list_groups" => {
@@ -417,13 +423,14 @@ impl Tool for GroupManagementTool {
                 let url = format!(
                     "{}/api/teams/{}/agents/{}/dispatch",
                     self.gateway_url.trim_end_matches('/'),
-                    self.team_id,
+                    self.agent_id,
                     role
                 );
                 let mut req = self
                     .client()
                     .post(&url)
                     .header("X-API-Key", &self.api_key)
+            .header("X-Agent-Id", &self.agent_id)
                     .json(&json!({ "message": message }))
                     .timeout(std::time::Duration::from_secs(150));
                 match req.send().await {
@@ -476,11 +483,34 @@ impl Tool for GroupManagementTool {
                     .await)
             }
 
+            "lock_routing" => {
+                if conv_id.is_empty() {
+                    return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id is required".to_string()) });
+                }
+                let reason = args["reason"].as_str().unwrap_or("workflow active");
+                Ok(self.api_request(
+                    reqwest::Method::POST,
+                    &format!("/api/conversations/{conv_id}/routing-lock"),
+                    Some(json!({ "agent_id": self.agent_id, "reason": reason })),
+                ).await)
+            }
+
+            "unlock_routing" => {
+                if conv_id.is_empty() {
+                    return Ok(ToolResult { success: false, output: String::new(), error: Some("conversation_id is required".to_string()) });
+                }
+                Ok(self.api_request(
+                    reqwest::Method::DELETE,
+                    &format!("/api/conversations/{conv_id}/routing-lock"),
+                    None,
+                ).await)
+            }
+
             _ => Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Unknown action '{action}'. Use: create_group, delete_group, update_group, list_members, invite_agent, remove_agent, invite_user, list_roles, dispatch, update_member_profile"
+                    "Unknown action '{action}'. Use: create_group, delete_group, update_group, list_members, invite_agent, remove_agent, invite_user, list_roles, dispatch, update_member_profile, lock_routing, unlock_routing"
                 )),
             }),
         }

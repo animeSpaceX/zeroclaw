@@ -4,26 +4,30 @@ use serde_json::{json, Value};
 
 pub struct TaskManagementTool {
     gateway_url: String,
-    team_id: String,
+    agent_id: String,
     api_key: String,
+    conversation_id: String,
 }
 
 impl TaskManagementTool {
-    pub fn new(gateway_url: String, team_id: String) -> Self {
+    pub fn new(gateway_url: String, agent_id: String) -> Self {
         let api_key = std::env::var("PLATFORM_API_KEY").unwrap_or_default();
+        let conversation_id = std::env::var("CONVERSATION_ID").unwrap_or_default();
         Self {
             gateway_url,
-            team_id,
+            agent_id,
             api_key,
+            conversation_id,
         }
     }
 
-    /// Build base URL. Use conversation_id if available, otherwise use team_id (gateway will resolve).
-    fn base_url(&self, conversation_id: Option<&str>) -> String {
+    /// Build base URL. Use conversation_id if available, otherwise use agent_id (gateway will resolve).
+    fn base_url(&self) -> String {
         let gw = self.gateway_url.trim_end_matches('/');
-        match conversation_id {
-            Some(cid) if !cid.is_empty() => format!("{}/api/conversations/{}", gw, cid),
-            _ => format!("{}/api/teams/{}", gw, self.team_id),
+        if !self.conversation_id.is_empty() {
+            format!("{}/api/conversations/{}", gw, self.conversation_id)
+        } else {
+            format!("{}/api/teams/{}", gw, self.agent_id)
         }
     }
 
@@ -31,17 +35,18 @@ impl TaskManagementTool {
         reqwest::Client::new()
     }
 
-    fn auth_header(&self) -> (&str, String) {
-        ("X-API-Key", self.api_key.clone())
+    fn auth_headers(&self) -> [(&str, &str); 2] {
+        [("X-API-Key", &self.api_key), ("X-Agent-Id", &self.agent_id)]
     }
 
     async fn api_get(&self, base: &str, path: &str) -> ToolResult {
         let url = format!("{}{}", base, path);
-        let (header, value) = self.auth_header();
+        let headers = self.auth_headers();
         match self
             .client()
             .get(&url)
-            .header(header, value)
+            .header(headers[0].0, headers[0].1)
+            .header(headers[1].0, headers[1].1)
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -73,11 +78,12 @@ impl TaskManagementTool {
 
     async fn api_post(&self, base: &str, path: &str, body: serde_json::Value) -> ToolResult {
         let url = format!("{}{}", base, path);
-        let (header, value) = self.auth_header();
+        let headers = self.auth_headers();
         match self
             .client()
             .post(&url)
-            .header(header, value)
+            .header(headers[0].0, headers[0].1)
+            .header(headers[1].0, headers[1].1)
             .json(&body)
             .timeout(std::time::Duration::from_secs(15))
             .send()
@@ -110,11 +116,12 @@ impl TaskManagementTool {
 
     async fn api_patch(&self, base: &str, path: &str, body: serde_json::Value) -> ToolResult {
         let url = format!("{}{}", base, path);
-        let (header, value) = self.auth_header();
+        let headers = self.auth_headers();
         match self
             .client()
             .patch(&url)
-            .header(header, value)
+            .header(headers[0].0, headers[0].1)
+            .header(headers[1].0, headers[1].1)
             .json(&body)
             .timeout(std::time::Duration::from_secs(15))
             .send()
@@ -147,11 +154,12 @@ impl TaskManagementTool {
 
     async fn api_delete(&self, base: &str, path: &str) -> ToolResult {
         let url = format!("{}{}", base, path);
-        let (header, value) = self.auth_header();
+        let headers = self.auth_headers();
         match self
             .client()
             .delete(&url)
-            .header(header, value)
+            .header(headers[0].0, headers[0].1)
+            .header(headers[1].0, headers[1].1)
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -186,11 +194,12 @@ impl TaskManagementTool {
     }
 
     async fn api_get_json(&self, url: &str) -> Result<Value, String> {
-        let (header, value) = self.auth_header();
+        let headers = self.auth_headers();
         match self
             .client()
             .get(url)
-            .header(header, value)
+            .header(headers[0].0, headers[0].1)
+            .header(headers[1].0, headers[1].1)
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -370,10 +379,6 @@ impl Tool for TaskManagementTool {
                     ],
                     "description": "The operation to perform"
                 },
-                "conversation_id": {
-                    "type": "string",
-                    "description": "The group conversation ID (UUID). Extract from the [群聊: ... | conversation_id: UUID] header in the message context. If omitted, uses CONVERSATION_ID env var."
-                },
                 "project_id": {
                     "type": "integer",
                     "description": "Project ID. Required for create_task once the conversation already has project(s)."
@@ -436,18 +441,7 @@ impl Tool for TaskManagementTool {
 
         tracing::info!(action = action, args = %args, "task_management: execute called");
 
-        // Resolve conversation_id: arg > env var > None (fall back to team_id route)
-        let conv_id = args["conversation_id"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .or_else(|| {
-                std::env::var("CONVERSATION_ID")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            });
-
-        let base = self.base_url(conv_id.as_deref());
+        let base = self.base_url();
         tracing::info!(base_url = %base, "task_management: resolved base URL");
 
         match action {
@@ -547,14 +541,14 @@ impl Tool for TaskManagementTool {
                 }
                 if let Some(role) = args["assigned_to"].as_str() {
                     if !role.trim().is_empty() && args["assigned_to_id"].as_str().unwrap_or("").is_empty() {
-                        let Some(conversation_id) = conv_id.as_deref() else {
+                        if self.conversation_id.is_empty() {
                             return Ok(ToolResult {
                                 success: false,
                                 output: String::new(),
-                                error: Some("conversation_id is required when using assigned_to role shorthand".to_string()),
+                                error: Some("CONVERSATION_ID not set — cannot resolve role shorthand".to_string()),
                             });
-                        };
-                        match self.resolve_assigned_to_agent(conversation_id, role).await {
+                        }
+                        match self.resolve_assigned_to_agent(&self.conversation_id, role).await {
                             Ok(agent_id) => {
                                 body["assigned_to_type"] = json!("agent");
                                 body["assigned_to_id"] = json!(agent_id);
@@ -608,14 +602,14 @@ impl Tool for TaskManagementTool {
                 }
                 if let Some(role) = args["assigned_to"].as_str() {
                     if !role.trim().is_empty() && args["assigned_to_id"].as_str().unwrap_or("").is_empty() {
-                        let Some(conversation_id) = conv_id.as_deref() else {
+                        if self.conversation_id.is_empty() {
                             return Ok(ToolResult {
                                 success: false,
                                 output: String::new(),
-                                error: Some("conversation_id is required when using assigned_to role shorthand".to_string()),
+                                error: Some("CONVERSATION_ID not set — cannot resolve role shorthand".to_string()),
                             });
-                        };
-                        match self.resolve_assigned_to_agent(conversation_id, role).await {
+                        }
+                        match self.resolve_assigned_to_agent(&self.conversation_id, role).await {
                             Ok(agent_id) => {
                                 body["assigned_to_type"] = json!("agent");
                                 body["assigned_to_id"] = json!(agent_id);
