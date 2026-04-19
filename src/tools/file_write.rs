@@ -7,11 +7,22 @@ use std::sync::Arc;
 /// Write file contents with path sandboxing
 pub struct FileWriteTool {
     security: Arc<SecurityPolicy>,
+    /// Optional platform notify config: (gateway_url, agent_id).
+    /// When set, writing WORKFLOW.md triggers a sync notification to the gateway.
+    platform_notify: Option<(String, String)>,
 }
 
 impl FileWriteTool {
     pub fn new(security: Arc<SecurityPolicy>) -> Self {
-        Self { security }
+        Self {
+            security,
+            platform_notify: None,
+        }
+    }
+
+    pub fn with_platform_notify(mut self, gateway_url: String, agent_id: String) -> Self {
+        self.platform_notify = Some((gateway_url, agent_id));
+        self
     }
 }
 
@@ -147,11 +158,37 @@ impl Tool for FileWriteTool {
         }
 
         match tokio::fs::write(&resolved_target, content).await {
-            Ok(()) => Ok(ToolResult {
-                success: true,
-                output: format!("Written {} bytes to {path}", content.len()),
-                error: None,
-            }),
+            Ok(()) => {
+                // Notify gateway when WORKFLOW.md is written (fire-and-forget)
+                if path == "WORKFLOW.md" || path.ends_with("/WORKFLOW.md") {
+                    if let Some((gw_url, agent_id)) = &self.platform_notify {
+                        let url = format!(
+                            "{}/api/internal/agents/{}/workflow-sync",
+                            gw_url.trim_end_matches('/'),
+                            agent_id,
+                        );
+                        let body = serde_json::json!({ "content": content });
+                        let url2 = url.clone();
+                        tokio::spawn(async move {
+                            let client = reqwest::Client::new();
+                            if let Err(e) = client
+                                .post(&url2)
+                                .json(&body)
+                                .timeout(std::time::Duration::from_secs(10))
+                                .send()
+                                .await
+                            {
+                                tracing::warn!(error = %e, "Failed to notify gateway of WORKFLOW.md change");
+                            }
+                        });
+                    }
+                }
+                Ok(ToolResult {
+                    success: true,
+                    output: format!("Written {} bytes to {path}", content.len()),
+                    error: None,
+                })
+            }
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: String::new(),

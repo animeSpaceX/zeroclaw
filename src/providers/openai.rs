@@ -93,7 +93,7 @@ struct NativeChatRequest {
 struct NativeMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,7 +262,7 @@ impl OpenAiProvider {
                                 let content = value
                                     .get("content")
                                     .and_then(serde_json::Value::as_str)
-                                    .map(ToString::to_string);
+                                    .map(|s| serde_json::Value::String(s.to_string()));
                                 let reasoning_content = value
                                     .get("reasoning_content")
                                     .and_then(serde_json::Value::as_str)
@@ -288,7 +288,7 @@ impl OpenAiProvider {
                         let content = value
                             .get("content")
                             .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string);
+                            .map(|s| serde_json::Value::String(s.to_string()));
                         return NativeMessage {
                             role: "tool".to_string(),
                             content,
@@ -299,9 +299,29 @@ impl OpenAiProvider {
                     }
                 }
 
+                // For user messages, convert [IMAGE:url] markers to multimodal parts
+                let content_value = if m.role == "user" {
+                    let (cleaned, refs) = crate::multimodal::parse_image_markers(&m.content);
+                    if refs.is_empty() {
+                        Some(serde_json::Value::String(m.content.clone()))
+                    } else {
+                        let mut parts = Vec::new();
+                        let trimmed = cleaned.trim();
+                        if !trimmed.is_empty() {
+                            parts.push(serde_json::json!({"type": "text", "text": trimmed}));
+                        }
+                        for image_ref in &refs {
+                            parts.push(serde_json::json!({"type": "image_url", "image_url": {"url": image_ref}}));
+                        }
+                        Some(serde_json::Value::Array(parts))
+                    }
+                } else {
+                    Some(serde_json::Value::String(m.content.clone()))
+                };
+
                 NativeMessage {
                     role: m.role.clone(),
-                    content: Some(m.content.clone()),
+                    content: content_value,
                     tool_call_id: None,
                     tool_calls: None,
                     reasoning_content: None,

@@ -12,11 +12,20 @@ use std::sync::Arc;
 /// the matched text. Security checks mirror [`super::file_write::FileWriteTool`].
 pub struct FileEditTool {
     security: Arc<SecurityPolicy>,
+    platform_notify: Option<(String, String)>,
 }
 
 impl FileEditTool {
     pub fn new(security: Arc<SecurityPolicy>) -> Self {
-        Self { security }
+        Self {
+            security,
+            platform_notify: None,
+        }
+    }
+
+    pub fn with_platform_notify(mut self, gateway_url: String, agent_id: String) -> Self {
+        self.platform_notify = Some((gateway_url, agent_id));
+        self
     }
 }
 
@@ -205,14 +214,39 @@ impl Tool for FileEditTool {
         let new_content = content.replacen(old_string, new_string, 1);
 
         match tokio::fs::write(&resolved_target, &new_content).await {
-            Ok(()) => Ok(ToolResult {
-                success: true,
-                output: format!(
-                    "Edited {path}: replaced 1 occurrence ({} bytes)",
-                    new_content.len()
-                ),
-                error: None,
-            }),
+            Ok(()) => {
+                // Notify gateway when WORKFLOW.md is edited (fire-and-forget)
+                if path == "WORKFLOW.md" || path.ends_with("/WORKFLOW.md") {
+                    if let Some((gw_url, agent_id)) = &self.platform_notify {
+                        let url = format!(
+                            "{}/api/internal/agents/{}/workflow-sync",
+                            gw_url.trim_end_matches('/'),
+                            agent_id,
+                        );
+                        let body = serde_json::json!({ "content": new_content });
+                        tokio::spawn(async move {
+                            let client = reqwest::Client::new();
+                            if let Err(e) = client
+                                .post(&url)
+                                .json(&body)
+                                .timeout(std::time::Duration::from_secs(10))
+                                .send()
+                                .await
+                            {
+                                tracing::warn!(error = %e, "Failed to notify gateway of WORKFLOW.md change");
+                            }
+                        });
+                    }
+                }
+                Ok(ToolResult {
+                    success: true,
+                    output: format!(
+                        "Edited {path}: replaced 1 occurrence ({} bytes)",
+                        new_content.len()
+                    ),
+                    error: None,
+                })
+            }
             Err(e) => Ok(ToolResult {
                 success: false,
                 output: String::new(),

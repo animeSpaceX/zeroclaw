@@ -209,6 +209,10 @@ async fn normalize_image_reference(
             .into());
         }
 
+        if config.url_passthrough {
+            return Ok(source.to_string());
+        }
+
         return normalize_remote_image(source, max_bytes, remote_client).await;
     }
 
@@ -507,6 +511,7 @@ mod tests {
             max_images: 1,
             max_image_size_mb: 5,
             allow_remote_fetch: false,
+            url_passthrough: false,
         };
 
         let error = prepare_messages_for_provider(&messages, &config)

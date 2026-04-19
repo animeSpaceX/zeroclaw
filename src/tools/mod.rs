@@ -262,8 +262,17 @@ pub fn all_tools_with_runtime(
 
     if has_filesystem_access {
         tool_arcs.push(Arc::new(FileReadTool::new(security.clone())));
-        tool_arcs.push(Arc::new(FileWriteTool::new(security.clone())));
-        tool_arcs.push(Arc::new(FileEditTool::new(security.clone())));
+        let mut file_write = FileWriteTool::new(security.clone());
+        let mut file_edit = FileEditTool::new(security.clone());
+        if let (Some(url), Some(aid)) = (
+            &root_config.platform.gateway_url,
+            &root_config.platform.agent_id,
+        ) {
+            file_write = file_write.with_platform_notify(url.clone(), aid.clone());
+            file_edit = file_edit.with_platform_notify(url.clone(), aid.clone());
+        }
+        tool_arcs.push(Arc::new(file_write));
+        tool_arcs.push(Arc::new(file_edit));
         tool_arcs.push(Arc::new(ApplyPatchTool::new()));
         tool_arcs.push(Arc::new(GlobSearchTool::new(security.clone())));
         tool_arcs.push(Arc::new(ContentSearchTool::new(security.clone())));
@@ -349,8 +358,10 @@ pub fn all_tools_with_runtime(
     // PDF extraction (feature-gated at compile time via rag-pdf)
     tool_arcs.push(Arc::new(PdfReadTool::new(security.clone())));
 
-    // Vision tools
-    tool_arcs.push(Arc::new(ImageInfoTool::new(security.clone())));
+    // Vision tools — skip image_info when native vision is enabled (model handles images directly)
+    if !root_config.model_support_vision.unwrap_or(false) {
+        tool_arcs.push(Arc::new(ImageInfoTool::new(security.clone())));
+    }
 
     if let Some(key) = composio_key {
         if !key.is_empty() {

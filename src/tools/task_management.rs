@@ -363,7 +363,7 @@ impl Tool for TaskManagementTool {
     }
 
     fn description(&self) -> &str {
-        "Manage projects, tasks, and comments for a group conversation. Requires conversation_id (from group context). Supports assigned_to role shorthand and enforces project_id when tasks are created under an existing project workflow. Actions: list_projects, create_project, update_project, delete_project, list_tasks, create_task, update_task, delete_task, clear_tasks, list_comments, add_comment."
+        "Manage tasks for a group conversation. Use create_plan to create projects with tasks (the ONLY way to create tasks). Scheduler auto-dispatches tasks to agents — do NOT @agent after creating. Actions: create_plan, list_projects, list_tasks, update_task, delete_task, clear_tasks, list_comments, add_comment."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -373,11 +373,37 @@ impl Tool for TaskManagementTool {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "list_projects", "create_project", "update_project", "delete_project",
-                        "list_tasks", "create_task", "update_task", "delete_task", "clear_tasks",
+                        "create_plan",
+                        "list_projects", "update_project", "delete_project",
+                        "list_tasks", "update_task", "delete_task", "clear_tasks",
                         "list_comments", "add_comment"
                     ],
-                    "description": "The operation to perform"
+                    "description": "The operation to perform. Use create_plan to create tasks (NOT create_task)."
+                },
+                "project_title": {
+                    "type": "string",
+                    "description": "Project title (for create_plan)"
+                },
+                "project_description": {
+                    "type": "string",
+                    "description": "Project description (for create_plan)"
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "Task list for create_plan. Each item: {temp_id, title, description?, assigned_agent_id?, depends_on_temp?, estimated_minutes?, priority?}",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "temp_id": { "type": "string", "description": "Temporary ID for dependency references (e.g. 't1')" },
+                            "title": { "type": "string" },
+                            "description": { "type": "string" },
+                            "assigned_agent_id": { "type": "string", "description": "Agent UUID from list_members" },
+                            "depends_on_temp": { "type": "array", "items": { "type": "string" }, "description": "List of temp_ids this task depends on" },
+                            "estimated_minutes": { "type": "integer", "description": "Estimated time in minutes (default 60)" },
+                            "priority": { "type": "integer", "description": "Priority (0=normal, higher=urgent)" }
+                        },
+                        "required": ["temp_id", "title"]
+                    }
                 },
                 "project_id": {
                     "type": "integer",
@@ -445,23 +471,45 @@ impl Tool for TaskManagementTool {
         tracing::info!(base_url = %base, "task_management: resolved base URL");
 
         match action {
+            // ── Create Plan (the ONLY way to create tasks) ──
+            "create_plan" => {
+                let project_title = args["project_title"].as_str().unwrap_or("");
+                if project_title.is_empty() {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("project_title is required for create_plan".to_string()),
+                    });
+                }
+                let tasks = match args["tasks"].as_array() {
+                    Some(arr) if !arr.is_empty() => arr.clone(),
+                    _ => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some("tasks array is required and must not be empty".to_string()),
+                        });
+                    }
+                };
+                let mut body = json!({
+                    "project_title": project_title,
+                    "tasks": tasks,
+                });
+                if let Some(desc) = args["project_description"].as_str() {
+                    body["project_description"] = json!(desc);
+                }
+                Ok(self.api_post(&base, "/tasks/plan", body).await)
+            }
+
             // ── Projects ──
             "list_projects" => Ok(self.api_get(&base, "/projects").await),
 
             "create_project" => {
-                let title = args["title"].as_str().unwrap_or("");
-                if title.is_empty() {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("title is required for create_project".to_string()),
-                    });
-                }
-                let mut body = json!({ "title": title });
-                if let Some(desc) = args["description"].as_str() {
-                    body["description"] = json!(desc);
-                }
-                Ok(self.api_post(&base, "/projects", body).await)
+                Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("create_project is deprecated. Use create_plan instead — it creates both the project and tasks with dependency relationships. Scheduler will auto-dispatch tasks to agents.".to_string()),
+                })
             }
 
             "update_project" => {
@@ -508,71 +556,11 @@ impl Tool for TaskManagementTool {
             }
 
             "create_task" => {
-                let title = args["title"].as_str().unwrap_or("");
-                if title.is_empty() {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("title is required for create_task".to_string()),
-                    });
-                }
-                let project_id = match self
-                    .resolve_project_id_for_task(&base, args["project_id"].as_i64())
-                    .await
-                {
-                    Ok(project_id) => project_id,
-                    Err(error) => {
-                        return Ok(ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some(error),
-                        })
-                    }
-                };
-                let mut body = json!({ "title": title });
-                if let Some(v) = args["description"].as_str() {
-                    body["description"] = json!(v);
-                }
-                if let Some(v) = args["assigned_to_type"].as_str() {
-                    body["assigned_to_type"] = json!(v);
-                }
-                if let Some(v) = args["assigned_to_id"].as_str() {
-                    body["assigned_to_id"] = json!(v);
-                }
-                if let Some(role) = args["assigned_to"].as_str() {
-                    if !role.trim().is_empty() && args["assigned_to_id"].as_str().unwrap_or("").is_empty() {
-                        if self.conversation_id.is_empty() {
-                            return Ok(ToolResult {
-                                success: false,
-                                output: String::new(),
-                                error: Some("CONVERSATION_ID not set — cannot resolve role shorthand".to_string()),
-                            });
-                        }
-                        match self.resolve_assigned_to_agent(&self.conversation_id, role).await {
-                            Ok(agent_id) => {
-                                body["assigned_to_type"] = json!("agent");
-                                body["assigned_to_id"] = json!(agent_id);
-                            }
-                            Err(error) => {
-                                return Ok(ToolResult {
-                                    success: false,
-                                    output: String::new(),
-                                    error: Some(error),
-                                })
-                            }
-                        }
-                    }
-                }
-                if let Some(v) = project_id {
-                    body["project_id"] = json!(v);
-                }
-                if let Some(v) = args["priority"].as_i64() {
-                    body["priority"] = json!(v);
-                }
-                if let Some(v) = args["depends_on"].as_array() {
-                    body["depends_on"] = json!(v);
-                }
-                Ok(self.api_post(&base, "/tasks", body).await)
+                Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("create_task is deprecated. Use create_plan instead — it creates a project with tasks and dependency relationships. Scheduler will auto-dispatch tasks to agents. Do NOT @agent after creating.".to_string()),
+                })
             }
 
             "update_task" => {
@@ -697,7 +685,7 @@ impl Tool for TaskManagementTool {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Unknown action '{action}'. Use: list_projects, create_project, update_project, delete_project, list_tasks, create_task, update_task, delete_task, clear_tasks, list_comments, add_comment"
+                    "Unknown action '{action}'. Use: create_plan, list_projects, list_tasks, update_task, delete_task, clear_tasks, list_comments, add_comment"
                 )),
             }),
         }

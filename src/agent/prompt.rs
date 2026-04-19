@@ -101,6 +101,7 @@ impl PromptSection for IdentitySection {
         }
         for file in [
             "AGENTS.md",
+            "WORKFLOW.md",
             "SOUL.md",
             "TOOLS.md",
             "IDENTITY.md",

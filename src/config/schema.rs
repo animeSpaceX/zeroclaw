@@ -810,6 +810,11 @@ pub struct MultimodalConfig {
     /// Allow fetching remote image URLs (http/https). Disabled by default.
     #[serde(default)]
     pub allow_remote_fetch: bool,
+    /// Pass remote image URLs directly to the provider API instead of downloading
+    /// and base64-encoding them. Useful for providers that natively accept image URLs
+    /// (e.g. doubao, openai). Requires `allow_remote_fetch = true`.
+    #[serde(default)]
+    pub url_passthrough: bool,
 }
 
 fn default_multimodal_max_images() -> usize {
@@ -835,6 +840,7 @@ impl Default for MultimodalConfig {
             max_images: default_multimodal_max_images(),
             max_image_size_mb: default_multimodal_max_image_size_mb(),
             allow_remote_fetch: false,
+            url_passthrough: false,
         }
     }
 }
