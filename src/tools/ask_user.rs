@@ -115,6 +115,10 @@ impl Tool for AskUserTool {
         json!({
             "type": "object",
             "properties": {
+                "target_user_id": {
+                    "type": "string",
+                    "description": "Optional user ID. If set, only this user can answer; others see a read-only card."
+                },
                 "questions": {
                     "type": "array",
                     "description": "List of questions to present to the user",
