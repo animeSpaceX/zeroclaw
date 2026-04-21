@@ -704,6 +704,7 @@ pub(crate) async fn agent_turn(
         None,
         None,
         &[],
+        None,
     )
     .await
 }
@@ -750,6 +751,7 @@ pub(crate) async fn run_tool_call_loop_with_reply_target(
                 on_delta,
                 hooks,
                 excluded_tools,
+                None,
             ),
         )
         .await
@@ -802,6 +804,7 @@ pub(crate) async fn run_tool_call_loop_with_non_cli_approval_context(
                     on_delta,
                     hooks,
                     excluded_tools,
+                    None,
                 ),
             ),
         )
@@ -840,6 +843,7 @@ pub(crate) async fn run_tool_call_loop(
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     hooks: Option<&crate::hooks::HookRunner>,
     excluded_tools: &[String],
+    mut inject_rx: Option<&mut tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) -> Result<String> {
     let non_cli_approval_context = TOOL_LOOP_NON_CLI_APPROVAL_CONTEXT
         .try_with(Clone::clone)
@@ -902,6 +906,14 @@ pub(crate) async fn run_tool_call_loop(
             .is_some_and(CancellationToken::is_cancelled)
         {
             return Err(ToolLoopCancelled.into());
+        }
+
+        // Drain any mid-stream injected user messages
+        if let Some(ref mut rx) = inject_rx {
+            while let Ok(msg) = rx.try_recv() {
+                tracing::info!(target: "tool_loop_debug", "📨 Injecting mid-stream user message");
+                history.push(ChatMessage::user(msg));
+            }
         }
 
         if let Some(retry_prompt) = missing_tool_call_retry_prompt.take() {
@@ -2215,6 +2227,7 @@ pub async fn run(
             None,
             None,
             &[],
+            None,
         )
         .await?;
         final_output = response.clone();
@@ -2335,6 +2348,7 @@ pub async fn run(
                 None,
                 None,
                 &[],
+                None,
             )
             .await
             {
@@ -3206,6 +3220,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -3252,6 +3267,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -3292,6 +3308,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -3418,6 +3435,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("parallel execution should complete");
@@ -3489,6 +3507,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("tool loop should complete with denied tool execution");
@@ -3570,6 +3589,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("tool loop should continue after non-cli approval");
@@ -3628,6 +3648,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("tool loop should consume one-time allow-all token");
@@ -3747,6 +3768,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -3816,6 +3838,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("loop should complete when strip policy normalizes redirects");
@@ -3884,6 +3907,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("completion claim without tool call should trigger a recovery retry");
@@ -3932,6 +3956,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect_err("repeated completion claims without tool call should hard-fail");
@@ -3987,6 +4012,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("loop should retry once when model wrongly claims file tools are unavailable");
@@ -4029,6 +4055,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("planning-only text should be returned without forced tool-call rejection");
@@ -4073,6 +4100,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .await
         .expect("native fallback id flow should complete");
@@ -4122,6 +4150,7 @@ mod tests {
             Some(tx),
             None,
             &[],
+            None,
         )
         .await
         .expect("streaming provider should complete");
@@ -4180,6 +4209,7 @@ mod tests {
             Some(tx),
             None,
             &[],
+            None,
         )
         .await
         .expect("streaming tool loop should execute tool and finish");
@@ -4242,6 +4272,7 @@ mod tests {
             Some(tx),
             None,
             &[],
+            None,
         )
         .await
         .expect("native streaming events should preserve tool loop semantics");
@@ -4313,6 +4344,7 @@ mod tests {
             Some(tx),
             None,
             &[],
+            None,
         )
         .await
         .expect("routed streaming provider should complete");

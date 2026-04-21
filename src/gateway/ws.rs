@@ -545,6 +545,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
 
             let mut pending_suggestions: Option<Vec<String>> = None;
             let cancel_token = CancellationToken::new();
+            let (inject_tx, mut inject_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let result = {
                 let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(128);
                 let mut loop_future = std::pin::pin!(run_tool_call_loop(
@@ -564,6 +565,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                     Some(delta_tx), // delta streaming
                     None,           // hooks
                     &[],            // excluded tools
+                    Some(&mut inject_rx),
                 ));
 
                 // Overall timeout for the entire tool loop
@@ -614,8 +616,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                                                 let answers = parsed["answers"].clone();
                                                 crate::tools::ask_user::deliver_ask_user_answer(ask_id, answers).await;
                                             }
+                                        } else if msg_type == "message" {
+                                            let content = parsed["content"].as_str().unwrap_or("");
+                                            if !content.is_empty() {
+                                                let _ = inject_tx.send(content.to_string());
+                                                tracing::info!(target: "ws_chat", "📨 Queued mid-stream message for injection");
+                                            }
                                         }
-                                        // Other message types during loop are ignored
                                     }
                                 }
                                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
@@ -660,6 +667,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                     }
                 }
             };
+
+            // Drain any messages that arrived after the loop finished
+            while let Ok(msg) = inject_rx.try_recv() {
+                history.push(ChatMessage::user(msg));
+            }
 
             let elapsed_ms = msg_recv_time.elapsed().as_millis();
             tracing::info!(target: "ws_timing", elapsed_ms = elapsed_ms, result = matches!(result, Ok(_)), "✅ Agent loop completed");
