@@ -123,6 +123,10 @@ pub(crate) const DRAFT_PROGRESS_SENTINEL: &str = "\x00PROGRESS\x00";
 /// Payload is JSON-encoded `Vec<String>` appended after the sentinel.
 pub(crate) const SUGGESTIONS_SENTINEL: &str = "\x00SUGGESTIONS\x00";
 
+/// Sentinel prefix for LLM usage data (token counts per call).
+/// Payload is JSON: `{"model":"...","input_tokens":N,"output_tokens":N,"cached_tokens":N}`
+pub(crate) const USAGE_SENTINEL: &str = "\x00USAGE\x00";
+
 tokio::task_local! {
     static TOOL_LOOP_REPLY_TARGET: Option<String>;
 }
@@ -1079,6 +1083,17 @@ pub(crate) async fn run_tool_call_loop(
                     input_tokens: resp_input_tokens,
                     output_tokens: resp_output_tokens,
                 });
+
+                // Send usage data through delta channel for billing
+                if let Some(ref tx) = on_delta {
+                    let usage_json = serde_json::json!({
+                        "model": model,
+                        "input_tokens": resp_input_tokens.unwrap_or(0),
+                        "output_tokens": resp_output_tokens.unwrap_or(0),
+                        "cached_tokens": resp_cached_tokens.unwrap_or(0),
+                    });
+                    let _ = tx.send(format!("{USAGE_SENTINEL}{usage_json}")).await;
+                }
 
                 let response_text = resp.text_or_empty().to_string();
 

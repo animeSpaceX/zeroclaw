@@ -10,7 +10,7 @@
 //! ```
 
 use super::AppState;
-use crate::agent::loop_::{run_tool_call_loop, DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL, SUGGESTIONS_SENTINEL};
+use crate::agent::loop_::{run_tool_call_loop, DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL, SUGGESTIONS_SENTINEL, USAGE_SENTINEL};
 use crate::approval::ApprovalManager;
 use crate::providers::ChatMessage;
 use axum::{
@@ -498,8 +498,12 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
         };
 
         {
-            // Auto-trigger skill injection: match user message against skill triggers/names
-            let matched = crate::skills::match_skill_triggers(&session_skills, &content);
+            // Auto-trigger skill injection: match only the latest user message (not enriched context/history)
+            let trigger_text = content
+                .rfind("[来自 ")
+                .and_then(|pos| content[pos..].find("]: ").map(|i| &content[pos + i + 3..]))
+                .unwrap_or(&content);
+            let matched = crate::skills::match_skill_triggers(&session_skills, trigger_text);
             for skill in &matched {
                 if let Some(instructions) = crate::skills::load_skill_instructions(skill) {
                     history.push(ChatMessage::system(&instructions));
@@ -544,6 +548,10 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
             tracing::info!(target: "ws_timing", provider = %provider_label, model = %state.model, history_len = history.len(), "🚀 Starting agent loop");
 
             let mut pending_suggestions: Option<Vec<String>> = None;
+            let mut usage_input: u64 = 0;
+            let mut usage_output: u64 = 0;
+            let mut usage_cached: u64 = 0;
+            let mut usage_model = String::new();
             let cancel_token = CancellationToken::new();
             let (inject_tx, mut inject_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let result = {
@@ -587,6 +595,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                             if let Some(delta) = maybe_delta {
                                 if let Some(json_str) = delta.strip_prefix(SUGGESTIONS_SENTINEL) {
                                     pending_suggestions = serde_json::from_str(json_str).ok();
+                                } else if let Some(json_str) = delta.strip_prefix(USAGE_SENTINEL) {
+                                    if let Ok(u) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        usage_input += u["input_tokens"].as_u64().unwrap_or(0);
+                                        usage_output += u["output_tokens"].as_u64().unwrap_or(0);
+                                        usage_cached += u["cached_tokens"].as_u64().unwrap_or(0);
+                                        if let Some(m) = u["model"].as_str() { usage_model = m.to_string(); }
+                                    }
                                 } else if let Some(event) = parse_ws_delta_event(&delta) {
                                     emit_ws_delta_event(&mut socket, event).await;
                                 }
@@ -598,6 +613,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                             while let Ok(delta) = delta_rx.try_recv() {
                                 if let Some(json_str) = delta.strip_prefix(SUGGESTIONS_SENTINEL) {
                                     pending_suggestions = serde_json::from_str(json_str).ok();
+                                } else if let Some(json_str) = delta.strip_prefix(USAGE_SENTINEL) {
+                                    if let Ok(u) = serde_json::from_str::<serde_json::Value>(json_str) {
+                                        usage_input += u["input_tokens"].as_u64().unwrap_or(0);
+                                        usage_output += u["output_tokens"].as_u64().unwrap_or(0);
+                                        usage_cached += u["cached_tokens"].as_u64().unwrap_or(0);
+                                        if let Some(m) = u["model"].as_str() { usage_model = m.to_string(); }
+                                    }
                                 } else if let Some(event) = parse_ws_delta_event(&delta) {
                                     emit_ws_delta_event(&mut socket, event).await;
                                 }
@@ -699,11 +721,17 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, peer_addr: std::n
                         );
                     }
 
-                    // Send the full response as a done message
+                    // Send the full response as a done message (with accumulated usage)
                     let done = serde_json::json!({
                         "type": "done",
                         "full_response": safe_response,
                         "suggestions": pending_suggestions,
+                        "usage": {
+                            "model": usage_model,
+                            "input_tokens": usage_input,
+                            "output_tokens": usage_output,
+                            "cached_tokens": usage_cached,
+                        },
                     });
                     let _ = socket.send(Message::Text(done.to_string().into())).await;
 
