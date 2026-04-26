@@ -130,6 +130,8 @@ pub struct StreamChunk {
     pub is_final: bool,
     /// Approximate token count for this chunk (estimated).
     pub token_count: usize,
+    /// Token usage from the final streaming chunk.
+    pub usage: Option<TokenUsage>,
 }
 
 impl StreamChunk {
@@ -139,6 +141,7 @@ impl StreamChunk {
             delta: text.into(),
             is_final: false,
             token_count: 0,
+            usage: None,
         }
     }
 
@@ -148,6 +151,7 @@ impl StreamChunk {
             delta: String::new(),
             is_final: true,
             token_count: 0,
+            usage: None,
         }
     }
 
@@ -157,6 +161,7 @@ impl StreamChunk {
             delta: message.into(),
             is_final: true,
             token_count: 0,
+            usage: None,
         }
     }
 
@@ -177,14 +182,14 @@ pub enum StreamEvent {
     TextDelta(StreamChunk),
     /// Structured tool call emitted during streaming.
     ToolCall(ToolCall),
-    /// Stream has completed.
-    Final,
+    /// Stream has completed, optionally with usage from the final chunk.
+    Final(Option<TokenUsage>),
 }
 
 impl StreamEvent {
     pub(crate) fn from_chunk(chunk: StreamChunk) -> Self {
         if chunk.is_final {
-            Self::Final
+            Self::Final(chunk.usage)
         } else {
             Self::TextDelta(chunk)
         }
@@ -1068,6 +1073,6 @@ mod tests {
             StreamEvent::TextDelta(chunk) => assert_eq!(chunk.delta, "hello"),
             other => panic!("expected text delta event, got {other:?}"),
         }
-        assert!(matches!(second, StreamEvent::Final));
+        assert!(matches!(second, StreamEvent::Final(_)));
     }
 }

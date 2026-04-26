@@ -629,12 +629,20 @@ struct NativeChatRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    /// Request usage stats in the final streaming chunk (OpenAI-compatible).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptionsRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct StreamOptionsRequest {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -896,6 +904,7 @@ fn sse_bytes_to_chunks(
 
     tokio::spawn(async move {
         let mut buffer = String::new();
+        let mut last_usage: Option<TokenUsage> = None;
 
         match response.error_for_status_ref() {
             Ok(_) => {}
@@ -929,14 +938,24 @@ fn sse_bytes_to_chunks(
                         let line = buffer[..pos].to_string();
                         buffer.drain(..=pos);
 
-                        match parse_sse_line(&line) {
-                            Ok(Some(content)) => {
-                                let mut chunk = StreamChunk::delta(content);
-                                if count_tokens {
-                                    chunk = chunk.with_token_estimate();
+                        match parse_sse_chunk(&line) {
+                            Ok(Some(sse_resp)) => {
+                                // Capture usage from any chunk that has it
+                                if let Some(u) = sse_resp.usage {
+                                    last_usage = Some(TokenUsage {
+                                        input_tokens: u.prompt_tokens,
+                                        output_tokens: u.completion_tokens,
+                                        cached_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+                                    });
                                 }
-                                if tx.send(Ok(chunk)).await.is_err() {
-                                    return; // Receiver dropped
+                                if let Some(content) = sse_resp.choices.first().and_then(extract_sse_text_delta) {
+                                    let mut chunk = StreamChunk::delta(content);
+                                    if count_tokens {
+                                        chunk = chunk.with_token_estimate();
+                                    }
+                                    if tx.send(Ok(chunk)).await.is_err() {
+                                        return;
+                                    }
                                 }
                             }
                             Ok(None) => {}
@@ -954,7 +973,9 @@ fn sse_bytes_to_chunks(
             }
         }
 
-        let _ = tx.send(Ok(StreamChunk::final_chunk())).await;
+        let mut final_chunk = StreamChunk::final_chunk();
+        final_chunk.usage = last_usage;
+        let _ = tx.send(Ok(final_chunk)).await;
     });
 
     stream::unfold(rx, |mut rx| async {
@@ -1079,7 +1100,7 @@ fn sse_bytes_to_events(
             }
         }
 
-        let _ = tx.send(Ok(StreamEvent::Final)).await;
+        let _ = tx.send(Ok(StreamEvent::Final(None))).await;
     });
 
     stream::unfold(rx, |mut rx| async move {
@@ -2359,6 +2380,7 @@ impl Provider for OpenAiCompatibleProvider {
             temperature,
             max_tokens: self.effective_max_tokens(),
             stream: Some(false),
+            stream_options: None,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
             thinking: Some(ThinkingConfig::disabled()),
@@ -2489,7 +2511,7 @@ impl Provider for OpenAiCompatibleProvider {
         options: StreamOptions,
     ) -> stream::BoxStream<'static, StreamResult<StreamEvent>> {
         if !options.enabled {
-            return stream::once(async { Ok(StreamEvent::Final) }).boxed();
+            return stream::once(async { Ok(StreamEvent::Final(None)) }).boxed();
         }
 
         let credential = match self.credential.as_ref() {
@@ -2541,6 +2563,7 @@ impl Provider for OpenAiCompatibleProvider {
                 temperature,
                 max_tokens: self.effective_max_tokens(),
                 stream: Some(options.enabled),
+                stream_options: if options.enabled { Some(StreamOptionsRequest { include_usage: true }) } else { None },
                 tools: tools.clone(),
                 tool_choice: tools.as_ref().map(|_| "auto".to_string()),
                 thinking: Some(ThinkingConfig::disabled()),

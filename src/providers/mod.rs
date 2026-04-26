@@ -30,6 +30,8 @@ pub mod reliable;
 pub mod router;
 pub mod telnyx;
 pub mod traits;
+pub mod deepseek;
+pub mod volcengine;
 
 #[allow(unused_imports)]
 pub use traits::{
@@ -172,7 +174,7 @@ pub(crate) fn is_qianfan_alias(name: &str) -> bool {
 }
 
 pub(crate) fn is_doubao_alias(name: &str) -> bool {
-    matches!(name, "doubao" | "volcengine" | "ark" | "doubao-cn")
+    matches!(name, "doubao" | "volcengine" | "ark" | "doubao-cn" | "huoshan")
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1176,13 +1178,7 @@ pub fn create_provider_with_url_and_options(
         name if is_qianfan_alias(name) => Ok(Box::new(OpenAiCompatibleProvider::new(
             "Qianfan", "https://aip.baidubce.com", key, AuthStyle::Bearer,
         ))),
-        name if is_doubao_alias(name) => Ok(Box::new(OpenAiCompatibleProvider::new_with_vision(
-            "Doubao",
-            "https://ark.cn-beijing.volces.com/api/v3",
-            key,
-            AuthStyle::Bearer,
-            true,
-        ))),
+        name if is_doubao_alias(name) => Ok(Box::new(volcengine::VolcengineProvider::new(key.map(|s| s.to_string())))),
         name if qwen_base_url(name).is_some() => Ok(Box::new(OpenAiCompatibleProvider::new_with_vision(
             "Qwen",
             qwen_base_url(name).expect("checked in guard"),
@@ -1201,9 +1197,7 @@ pub fn create_provider_with_url_and_options(
         "xai" | "grok" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "xAI", "https://api.x.ai", key, AuthStyle::Bearer,
         ))),
-        "deepseek" => Ok(Box::new(OpenAiCompatibleProvider::new(
-            "DeepSeek", "https://api.deepseek.com", key, AuthStyle::Bearer,
-        ))),
+        "deepseek" => Ok(Box::new(deepseek::DeepseekProvider::new(key.map(|s| s.to_string())))),
         "together" | "together-ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "Together AI", "https://api.together.xyz", key, AuthStyle::Bearer,
         ))),
@@ -1735,7 +1729,7 @@ pub fn list_providers() -> Vec<ProviderInfo> {
         ProviderInfo {
             name: "doubao",
             display_name: "Doubao (Volcengine)",
-            aliases: &["volcengine", "ark", "doubao-cn"],
+            aliases: &["volcengine", "ark", "doubao-cn", "huoshan"],
             local: false,
         },
         ProviderInfo {

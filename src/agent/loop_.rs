@@ -510,6 +510,8 @@ struct StreamedChatOutcome {
     response_text: String,
     tool_calls: Vec<ToolCall>,
     forwarded_live_deltas: bool,
+    /// Token usage from the streaming final chunk (when provider returns it via SSE).
+    stream_usage: Option<crate::providers::traits::TokenUsage>,
 }
 
 fn looks_like_streamed_tool_payload(window: &str) -> bool {
@@ -625,7 +627,10 @@ async fn consume_provider_streaming_response(
             anyhow::anyhow!("provider stream error: {err}")
         })?;
         match event {
-            StreamEvent::Final => break,
+            StreamEvent::Final(stream_usage) => {
+                outcome.stream_usage = stream_usage;
+                break;
+            }
             StreamEvent::ToolCall(tool_call) => {
                 outcome.tool_calls.push(tool_call);
                 suppress_forwarding = true;
@@ -1006,7 +1011,7 @@ pub(crate) async fn run_tool_call_loop(
                     Ok(crate::providers::ChatResponse {
                         text: Some(streamed.response_text),
                         tool_calls: streamed.tool_calls,
-                        usage: None,
+                        usage: streamed.stream_usage,
                         reasoning_content: None,
                         suggestions: None,
                     })
@@ -3006,12 +3011,12 @@ mod tests {
                 NativeStreamTurn::ToolCall(tool_call) => {
                     Box::pin(futures_util::stream::iter(vec![
                         Ok(StreamEvent::ToolCall(tool_call)),
-                        Ok(StreamEvent::Final),
+                        Ok(StreamEvent::Final(None)),
                     ]))
                 }
                 NativeStreamTurn::Text(text) => Box::pin(futures_util::stream::iter(vec![
                     Ok(StreamEvent::TextDelta(StreamChunk::delta(text))),
-                    Ok(StreamEvent::Final),
+                    Ok(StreamEvent::Final(None)),
                 ])),
             }
         }

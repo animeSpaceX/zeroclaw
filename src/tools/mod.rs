@@ -25,6 +25,7 @@ pub mod composio;
 pub mod content_search;
 pub mod cron_manage;
 pub mod delegate;
+pub mod fal_generate;
 pub mod delegate_coordination_status;
 pub mod file_edit;
 pub mod file_read;
@@ -67,6 +68,7 @@ pub use content_search::ContentSearchTool;
 pub use cron_manage::CronManageTool;
 pub use delegate::DelegateTool;
 pub use delegate_coordination_status::DelegateCoordinationStatusTool;
+pub use fal_generate::FalGenerateTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
@@ -406,6 +408,7 @@ pub fn all_tools_with_runtime(
                 tool_arcs.push(Arc::new(CronManageTool::new(url.clone(), agent_id.clone())));
                 tool_arcs.push(Arc::new(GatewayCallTool::new(url.clone(), agent_id.clone())));
                 tool_arcs.push(Arc::new(knowledge_search::KnowledgeSearchTool::new(url.clone(), agent_id.clone())));
+                tool_arcs.push(Arc::new(FalGenerateTool::new(url.clone(), agent_id.clone())));
                 tool_arcs.push(Arc::new(AskUserTool::new()));
             }
         }

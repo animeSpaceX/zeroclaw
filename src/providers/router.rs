@@ -459,7 +459,7 @@ mod tests {
                     name: "shell".to_string(),
                     arguments: r#"{"command":"date"}"#.to_string(),
                 })),
-                Ok(StreamEvent::Final),
+                Ok(StreamEvent::Final(None)),
             ])
             .boxed()
         }
@@ -814,7 +814,7 @@ mod tests {
             }
             other => panic!("expected tool-call event, got {other:?}"),
         }
-        assert!(matches!(second, StreamEvent::Final));
+        assert!(matches!(second, StreamEvent::Final(_)));
         assert_eq!(streaming.stream_calls.load(Ordering::SeqCst), 1);
         assert_eq!(streaming.tool_event_calls.load(Ordering::SeqCst), 1);
         assert_eq!(*streaming.last_stream_model.lock(), "claude-opus");
