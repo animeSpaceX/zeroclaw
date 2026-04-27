@@ -135,11 +135,7 @@ pub trait Channel: Send + Sync {
         thread_ts: Option<String>,
     ) -> anyhow::Result<()> {
         let raw_args = arguments.to_string();
-        let args_preview = if raw_args.len() > 220 {
-            format!("{}...", &raw_args[..220])
-        } else {
-            raw_args
-        };
+        let args_preview = crate::util::truncate_with_ellipsis(&raw_args, 220);
         let message = format!(
             "Approval required for tool `{tool_name}`.\nRequest ID: `{request_id}`\nArgs: `{args_preview}`\nApprove: `/approve-allow {request_id}`\nDeny: `/approve-deny {request_id}`"
         );

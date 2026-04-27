@@ -33,7 +33,7 @@ impl Tool for FileReadTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file. Relative paths resolve from workspace; outside paths require policy allowlist."
+                    "description": "Relative path from workspace root, e.g. 'TOOLS.md' or 'skills/my-skill/SKILL.md'. Do NOT use absolute paths (starting with '/') — they will be rejected."
                 },
                 "offset": {
                     "type": "integer",
@@ -64,10 +64,15 @@ impl Tool for FileReadTool {
 
         // Security check: validate path is within workspace
         if !self.security.is_path_allowed(path) {
+            let hint = if path.starts_with('/') {
+                format!("Path not allowed: '{path}'. Use a relative path from workspace root (e.g. 'TOOLS.md' not '/full/path/TOOLS.md').")
+            } else {
+                format!("Path not allowed by security policy: {path}")
+            };
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Path not allowed by security policy: {path}")),
+                error: Some(hint),
             });
         }
 

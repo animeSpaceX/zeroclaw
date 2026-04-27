@@ -69,11 +69,7 @@ fn summarize_history(history: &[ChatMessage]) -> String {
             other => other,
         };
         // Truncate very long individual messages
-        let content = if msg.content.len() > 2000 {
-            format!("{}...(truncated)", &msg.content[..2000])
-        } else {
-            msg.content.clone()
-        };
+        let content = crate::util::truncate_with_ellipsis(&msg.content, 2000);
         lines.push(format!("{role_label}: {content}"));
     }
 

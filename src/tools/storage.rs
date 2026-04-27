@@ -494,7 +494,7 @@ impl Tool for StorageTool {
                 },
                 "key": {
                     "type": "string",
-                    "description": "Storage key (e.g. 'docs/report.md'). Required for read/write/upload/download/delete."
+                    "description": "Storage key — just the filename or path, e.g. 'workflow.md' or 'docs/report.md'. Do NOT include storage_prefix or leading dots/slashes. Use exactly the key returned by action=list."
                 },
                 "content": {
                     "type": "string",
@@ -515,7 +515,7 @@ impl Tool for StorageTool {
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let action = args["action"].as_str().unwrap_or("").to_string();
-        let key = args["key"].as_str().unwrap_or("").to_string();
+        let key = normalize_storage_key(args["key"].as_str().unwrap_or(""));
 
         match action.as_str() {
             "list" => {
@@ -601,6 +601,26 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// Normalize storage key: strip leading dots, slashes, and hex-prefix paths.
+/// Examples:
+///   ".workflow.md"         → "workflow.md"
+///   "/docs/report.md"     → "docs/report.md"
+///   "9e4da6db/workflow.md" → "workflow.md"  (8-char hex prefix)
+///   "docs/report.md"      → "docs/report.md" (unchanged)
+fn normalize_storage_key(key: &str) -> String {
+    // Strip leading dots and slashes
+    let key = key.trim_start_matches('.').trim_start_matches('/');
+    // If the key looks like "{8-char-hex-prefix}/rest", strip the prefix.
+    // Storage prefixes are always 8 hex chars (UUID first 8 chars).
+    if let Some(slash_pos) = key.find('/') {
+        let prefix_part = &key[..slash_pos];
+        if prefix_part.len() == 8 && prefix_part.chars().all(|c| c.is_ascii_hexdigit()) {
+            return key[slash_pos + 1..].to_string();
+        }
+    }
+    key.to_string()
 }
 
 fn mime_from_key(key: &str) -> String {

@@ -42,7 +42,7 @@ impl Tool for FileWriteTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file. Relative paths resolve from workspace; outside paths require policy allowlist."
+                    "description": "Relative path from workspace root, e.g. 'output.md' or 'data/result.json'. Do NOT use absolute paths (starting with '/') — they will be rejected."
                 },
                 "content": {
                     "type": "string",
@@ -82,10 +82,15 @@ impl Tool for FileWriteTool {
 
         // Security check: validate path is within workspace
         if !self.security.is_path_allowed(path) {
+            let hint = if path.starts_with('/') {
+                format!("Path not allowed: '{path}'. Use a relative path from workspace root (e.g. 'output.md' not '/full/path/output.md').")
+            } else {
+                format!("Path not allowed by security policy: {path}")
+            };
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Path not allowed by security policy: {path}")),
+                error: Some(hint),
             });
         }
 

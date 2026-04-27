@@ -1716,11 +1716,7 @@ pub(crate) async fn run_tool_call_loop(
                     "\u{274c}"
                 };
                 // Include truncated output for downstream display
-                let output_trunc = if outcome.output.len() > 500 {
-                    format!("{}...", &outcome.output[..500])
-                } else {
-                    outcome.output.clone()
-                };
+                let output_trunc = truncate_with_ellipsis(&outcome.output, 500);
                 tracing::debug!(tool = %call.name, secs, "Sending progress complete to draft");
                 let _ = tx
                     .send(format!(

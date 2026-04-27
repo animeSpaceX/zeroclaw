@@ -335,8 +335,8 @@ fn build_subagent_notification(event: &serde_json::Value) -> String {
     if success {
         let result = event["result"].as_str().unwrap_or("[no output]");
         // Truncate very long results to avoid context overflow
-        let truncated = if result.len() > 3000 {
-            format!("{}...\n(truncated)", &result[..3000])
+        let truncated = if result.chars().count() > 3000 {
+            format!("{}...\n(truncated)", crate::util::truncate_with_ellipsis(result, 3000))
         } else {
             result.to_string()
         };
