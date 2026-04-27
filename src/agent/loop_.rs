@@ -119,6 +119,8 @@ pub(crate) const DRAFT_CLEAR_SENTINEL: &str = "\x00CLEAR\x00";
 /// Channel layers can suppress these messages by default and only expose them
 /// when the user explicitly asks for command/tool execution details.
 pub(crate) const DRAFT_PROGRESS_SENTINEL: &str = "\x00PROGRESS\x00";
+/// Sentinel prefix for LLM reasoning/thinking content deltas.
+pub(crate) const THINKING_SENTINEL: &str = "\x00THINKING\x00";
 /// Sentinel prefix for suggestions from the LLM response.
 /// Payload is JSON-encoded `Vec<String>` appended after the sentinel.
 pub(crate) const SUGGESTIONS_SENTINEL: &str = "\x00SUGGESTIONS\x00";
@@ -508,6 +510,7 @@ pub(crate) fn is_tool_iteration_limit_error(err: &anyhow::Error) -> bool {
 #[derive(Debug, Default)]
 struct StreamedChatOutcome {
     response_text: String,
+    reasoning_content: String,
     tool_calls: Vec<ToolCall>,
     forwarded_live_deltas: bool,
     /// Token usage from the streaming final chunk (when provider returns it via SSE).
@@ -630,6 +633,14 @@ async fn consume_provider_streaming_response(
             StreamEvent::Final(stream_usage) => {
                 outcome.stream_usage = stream_usage;
                 break;
+            }
+            StreamEvent::ThinkingDelta(text) => {
+                outcome.reasoning_content.push_str(&text);
+                if let Some(tx) = delta_sender {
+                    if tx.send(format!("{THINKING_SENTINEL}{text}")).await.is_err() {
+                        delta_sender = None;
+                    }
+                }
             }
             StreamEvent::ToolCall(tool_call) => {
                 outcome.tool_calls.push(tool_call);
@@ -1622,17 +1633,8 @@ pub(crate) async fn run_tool_call_loop(
 
             // ── Progress: tool start ────────────────────────────
             if let Some(ref tx) = on_delta {
-                let progress = if tool_name == "ask_user" {
-                    // Send complete args (including _ask_id) so the frontend can render the question UI
-                    format!("\u{23f3} ask_user::{}\n", tool_args)
-                } else {
-                    let hint = truncate_tool_args_for_progress(&tool_name, &tool_args, 60);
-                    if hint.is_empty() {
-                        format!("\u{23f3} {}\n", tool_name)
-                    } else {
-                        format!("\u{23f3} {}: {hint}\n", tool_name)
-                    }
-                };
+                // Send tool name + full args JSON so downstream can show details
+                let progress = format!("\u{23f3} {}::{}\n", tool_name, tool_args);
                 tracing::debug!(tool = %tool_name, "Sending progress start to draft");
                 let _ = tx
                     .send(format!("{DRAFT_PROGRESS_SENTINEL}{progress}"))
@@ -1713,11 +1715,18 @@ pub(crate) async fn run_tool_call_loop(
                 } else {
                     "\u{274c}"
                 };
+                // Include truncated output for downstream display
+                let output_trunc = if outcome.output.len() > 500 {
+                    format!("{}...", &outcome.output[..500])
+                } else {
+                    outcome.output.clone()
+                };
                 tracing::debug!(tool = %call.name, secs, "Sending progress complete to draft");
                 let _ = tx
                     .send(format!(
-                        "{DRAFT_PROGRESS_SENTINEL}{icon} {} ({secs}s)\n",
-                        call.name
+                        "{DRAFT_PROGRESS_SENTINEL}{icon} {} ({secs}s)::{}\n",
+                        call.name,
+                        serde_json::json!({"output": output_trunc}),
                     ))
                     .await;
             }

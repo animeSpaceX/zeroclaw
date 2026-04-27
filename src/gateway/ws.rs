@@ -10,7 +10,7 @@
 //! ```
 
 use super::AppState;
-use crate::agent::loop_::{run_tool_call_loop, DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL, SUGGESTIONS_SENTINEL, USAGE_SENTINEL};
+use crate::agent::loop_::{run_tool_call_loop, DRAFT_CLEAR_SENTINEL, DRAFT_PROGRESS_SENTINEL, THINKING_SENTINEL, SUGGESTIONS_SENTINEL, USAGE_SENTINEL};
 use crate::approval::ApprovalManager;
 use crate::providers::ChatMessage;
 use axum::{
@@ -50,6 +50,7 @@ fn append_chat_log(config_dir: &Path, entry: &serde_json::Value) {
 #[derive(Debug, Clone, PartialEq)]
 enum WsDeltaEvent {
     ContentChunk(String),
+    ThinkingContent(String),
     Thinking { iteration: u32 },
     ToolCall {
         name: String,
@@ -60,6 +61,7 @@ enum WsDeltaEvent {
         name: String,
         success: bool,
         duration_secs: Option<u64>,
+        output: Option<String>,
     },
 }
 
@@ -162,6 +164,11 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
         return None;
     }
 
+    // Reasoning/thinking content from extended thinking
+    if let Some(content) = delta.strip_prefix(THINKING_SENTINEL) {
+        return Some(WsDeltaEvent::ThinkingContent(content.to_string()));
+    }
+
     if let Some(progress) = delta.strip_prefix(DRAFT_PROGRESS_SENTINEL) {
         let progress = progress.trim();
         if let Some(rest) = progress.strip_prefix("🤔 ") {
@@ -182,16 +189,17 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
             if rest.is_empty() {
                 return None;
             }
-            // ask_user sends complete JSON args after "ask_user::"
-            if let Some(full_json) = rest.strip_prefix("ask_user::") {
-                if let Ok(args) = serde_json::from_str(full_json.trim()) {
-                    return Some(WsDeltaEvent::ToolCall {
-                        name: "ask_user".to_string(),
-                        hint: None,
-                        full_args: Some(args),
-                    });
-                }
+            // All tools now send "name::{json}" format
+            if let Some((name, json_part)) = rest.split_once("::") {
+                let name = name.trim().to_string();
+                let full_args = serde_json::from_str(json_part.trim()).ok();
+                return Some(WsDeltaEvent::ToolCall {
+                    name,
+                    hint: None,
+                    full_args,
+                });
             }
+            // Fallback: "name: hint" or just "name"
             let (name, hint) = match rest.split_once(": ") {
                 Some((name, hint)) => {
                     let hint = hint.trim();
@@ -213,24 +221,13 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
             });
         }
 
+        // Tool completion: "✅ name (Ns)::{json}" or "✅ name (Ns)"
         if let Some(rest) = progress.strip_prefix("✅ ") {
-            if let Some((name, duration_secs)) = parse_tool_completion_payload(rest) {
-                return Some(WsDeltaEvent::ToolResult {
-                    name,
-                    success: true,
-                    duration_secs,
-                });
-            }
+            return parse_tool_result_with_output(rest, true);
         }
 
         if let Some(rest) = progress.strip_prefix("❌ ") {
-            if let Some((name, duration_secs)) = parse_tool_completion_payload(rest) {
-                return Some(WsDeltaEvent::ToolResult {
-                    name,
-                    success: false,
-                    duration_secs,
-                });
-            }
+            return parse_tool_result_with_output(rest, false);
         }
 
         return None;
@@ -243,10 +240,42 @@ fn parse_ws_delta_event(delta: &str) -> Option<WsDeltaEvent> {
     }
 }
 
+/// Parse tool completion payload that may contain `::{json}` suffix with output.
+fn parse_tool_result_with_output(rest: &str, success: bool) -> Option<WsDeltaEvent> {
+    // Try "name (Ns)::{json}" format first
+    if let Some((before_json, json_part)) = rest.split_once("::") {
+        if let Some((name, duration_secs)) = parse_tool_completion_payload(before_json.trim()) {
+            let output = serde_json::from_str::<serde_json::Value>(json_part.trim())
+                .ok()
+                .and_then(|v| v.get("output").and_then(|o| o.as_str()).map(|s| s.to_string()));
+            return Some(WsDeltaEvent::ToolResult {
+                name,
+                success,
+                duration_secs,
+                output,
+            });
+        }
+    }
+    // Fallback: "name (Ns)" without output
+    if let Some((name, duration_secs)) = parse_tool_completion_payload(rest) {
+        return Some(WsDeltaEvent::ToolResult {
+            name,
+            success,
+            duration_secs,
+            output: None,
+        });
+    }
+    None
+}
+
 async fn emit_ws_delta_event(socket: &mut WebSocket, event: WsDeltaEvent) {
     let payload = match event {
         WsDeltaEvent::ContentChunk(content) => json!({
             "type": "chunk",
+            "content": content,
+        }),
+        WsDeltaEvent::ThinkingContent(content) => json!({
+            "type": "thinking_content",
             "content": content,
         }),
         WsDeltaEvent::Thinking { iteration } => json!({
@@ -272,19 +301,24 @@ async fn emit_ws_delta_event(socket: &mut WebSocket, event: WsDeltaEvent) {
             name,
             success,
             duration_secs,
+            output,
         } => {
             let status = if success { "ok" } else { "error" };
-            let output = match duration_secs {
+            let status_text = match duration_secs {
                 Some(secs) => format!("{status} ({secs}s)"),
                 None => status.to_string(),
             };
-            json!({
+            let mut obj = json!({
                 "type": "tool_result",
                 "name": name,
                 "success": success,
                 "duration_secs": duration_secs,
-                "output": output,
-            })
+                "status": status_text,
+            });
+            if let Some(output_text) = output {
+                obj["output"] = json!(output_text);
+            }
+            obj
         }
     };
 
@@ -909,6 +943,19 @@ mod tests {
 
     #[test]
     fn parse_ws_delta_event_maps_tool_start() {
+        let delta = format!("{DRAFT_PROGRESS_SENTINEL}⏳ shell::{{\"command\":\"ls -la\"}}\n");
+        assert_eq!(
+            parse_ws_delta_event(&delta),
+            Some(WsDeltaEvent::ToolCall {
+                name: "shell".to_string(),
+                hint: None,
+                full_args: Some(json!({ "command": "ls -la" })),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_ws_delta_event_maps_tool_start_fallback() {
         let delta = format!("{DRAFT_PROGRESS_SENTINEL}⏳ shell: ls -la\n");
         assert_eq!(
             parse_ws_delta_event(&delta),
@@ -929,7 +976,31 @@ mod tests {
                 name: "shell".to_string(),
                 success: true,
                 duration_secs: Some(2),
+                output: None,
             })
+        );
+    }
+
+    #[test]
+    fn parse_ws_delta_event_maps_tool_success_with_output() {
+        let delta = format!("{DRAFT_PROGRESS_SENTINEL}✅ shell (2s)::{{\"output\":\"hello world\"}}\n");
+        assert_eq!(
+            parse_ws_delta_event(&delta),
+            Some(WsDeltaEvent::ToolResult {
+                name: "shell".to_string(),
+                success: true,
+                duration_secs: Some(2),
+                output: Some("hello world".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_ws_delta_event_maps_thinking_content() {
+        let delta = format!("{THINKING_SENTINEL}Let me think about this...");
+        assert_eq!(
+            parse_ws_delta_event(&delta),
+            Some(WsDeltaEvent::ThinkingContent("Let me think about this...".to_string()))
         );
     }
 

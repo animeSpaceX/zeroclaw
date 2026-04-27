@@ -180,6 +180,8 @@ impl StreamChunk {
 pub enum StreamEvent {
     /// Text delta from the assistant.
     TextDelta(StreamChunk),
+    /// Reasoning/thinking content delta from the assistant.
+    ThinkingDelta(String),
     /// Structured tool call emitted during streaming.
     ToolCall(ToolCall),
     /// Stream has completed, optionally with usage from the final chunk.

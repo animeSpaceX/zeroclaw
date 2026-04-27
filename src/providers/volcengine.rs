@@ -30,13 +30,15 @@ const BASE_URL: &str = "https://ark.cn-beijing.volces.com/api/v3";
 pub struct VolcengineProvider {
     base_url: String,
     credential: Option<String>,
+    reasoning_enabled: bool,
 }
 
 impl VolcengineProvider {
-    pub fn new(credential: Option<String>) -> Self {
+    pub fn new(credential: Option<String>, reasoning_enabled: bool) -> Self {
         Self {
             base_url: BASE_URL.to_string(),
             credential,
+            reasoning_enabled,
         }
     }
 
@@ -593,6 +595,13 @@ fn stream_sse_to_events(
                         }
                     }
 
+                    // Reasoning/thinking content delta
+                    if let Some(reasoning) = &delta.reasoning_content {
+                        if !reasoning.is_empty() {
+                            let _ = tx.send(Ok(StreamEvent::ThinkingDelta(reasoning.clone()))).await;
+                        }
+                    }
+
                     // Tool call deltas
                     if let Some(tc_deltas) = &delta.tool_calls {
                         for tc_delta in tc_deltas {
@@ -789,7 +798,7 @@ impl Provider for VolcengineProvider {
             stream_options: None,
             tools: None,
             tool_choice: None,
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: if self.reasoning_enabled { None } else { Some(ThinkingConfig::disabled()) },
         };
 
         let key = self
@@ -838,7 +847,7 @@ impl Provider for VolcengineProvider {
             stream_options: None,
             tools,
             tool_choice: Some(json!("auto")),
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: if self.reasoning_enabled { None } else { Some(ThinkingConfig::disabled()) },
         };
 
         let key = self
@@ -879,7 +888,7 @@ impl Provider for VolcengineProvider {
             stream_options: None,
             tools: Some(tools.to_vec()),
             tool_choice: Some(json!("auto")),
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: if self.reasoning_enabled { None } else { Some(ThinkingConfig::disabled()) },
         };
 
         let key = self
@@ -943,7 +952,7 @@ impl Provider for VolcengineProvider {
             }),
             tools: None,
             tool_choice: None,
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: if self.reasoning_enabled { None } else { Some(ThinkingConfig::disabled()) },
         };
 
         let url = self.chat_completions_url();
@@ -1031,7 +1040,7 @@ impl Provider for VolcengineProvider {
             } else {
                 None
             },
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: if self.reasoning_enabled { None } else { Some(ThinkingConfig::disabled()) },
         };
 
         let url = self.chat_completions_url();
@@ -1336,7 +1345,7 @@ mod tests {
             }),
             tools: None,
             tool_choice: None,
-            thinking: Some(ThinkingConfig::disabled()),
+            thinking: if self.reasoning_enabled { None } else { Some(ThinkingConfig::disabled()) },
         };
 
         let json = serde_json::to_value(&req).unwrap();

@@ -159,6 +159,16 @@ impl WebSearchTool {
     }
 
     async fn search_brave(&self, query: &str) -> anyhow::Result<String> {
+        // When running inside the platform (GATEWAY_URL + PLATFORM_API_KEY set),
+        // route through gateway proxy for billing. Otherwise, call Brave API directly.
+        let gateway_url = std::env::var("GATEWAY_URL").ok().filter(|s| !s.is_empty());
+        let platform_key = std::env::var("PLATFORM_API_KEY").ok().filter(|s| !s.is_empty());
+        let agent_id = std::env::var("AGENT_ID").ok().filter(|s| !s.is_empty());
+
+        if let (Some(gw), Some(key), Some(aid)) = (gateway_url, platform_key, agent_id) {
+            return self.search_brave_via_gateway(&gw, &key, &aid, query).await;
+        }
+
         let auth_token = self
             .get_next_api_key()
             .ok_or_else(|| anyhow::anyhow!("Brave API key not configured"))?;
@@ -183,6 +193,44 @@ impl WebSearchTool {
 
         if !response.status().is_success() {
             anyhow::bail!("Brave search failed with status: {}", response.status());
+        }
+
+        let json: serde_json::Value = response.json().await?;
+        self.parse_brave_results(&json, query)
+    }
+
+    /// Route brave search through gateway proxy for billing.
+    async fn search_brave_via_gateway(
+        &self,
+        gateway_url: &str,
+        api_key: &str,
+        agent_id: &str,
+        query: &str,
+    ) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/api/internal/search/brave",
+            gateway_url.trim_end_matches('/')
+        );
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(self.timeout_secs))
+            .build()?;
+
+        let response = client
+            .post(&url)
+            .header("X-Agent-Id", agent_id)
+            .header("X-API-Key", api_key)
+            .json(&json!({
+                "query": query,
+                "count": self.max_results,
+            }))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Gateway brave search failed ({}): {}", status, body);
         }
 
         let json: serde_json::Value = response.json().await?;
