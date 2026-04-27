@@ -498,7 +498,11 @@ impl Tool for TaskManagementTool {
                 if let Some(desc) = args["project_description"].as_str() {
                     body["project_description"] = json!(desc);
                 }
-                Ok(self.api_post(&base, "/tasks/plan", body).await)
+                let mut result = self.api_post(&base, "/tasks/plan", body).await;
+                if result.success {
+                    result.output.push_str("\n\n[IMPORTANT: Tasks created. The scheduler will auto-dispatch tasks to assigned agents. Do NOT @mention any agent — just inform the user that the plan is created.]");
+                }
+                Ok(result)
             }
 
             // ── Projects ──
@@ -633,7 +637,13 @@ impl Tool for TaskManagementTool {
                 if let Some(v) = args["depends_on"].as_array() {
                     body["depends_on"] = json!(v);
                 }
-                Ok(self.api_patch(&base, &format!("/tasks/{tid}"), body).await)
+                let mut result = self.api_patch(&base, &format!("/tasks/{tid}"), body.clone()).await;
+                // api_patch returns empty body on 204 No Content — provide explicit confirmation
+                if result.success && result.output.is_empty() {
+                    let status = body.get("status").and_then(|v| v.as_str()).unwrap_or("updated");
+                    result.output = format!("Task #{tid} updated successfully (status: {status}).");
+                }
+                Ok(result)
             }
 
             "delete_task" => {
