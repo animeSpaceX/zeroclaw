@@ -7,7 +7,7 @@ use crate::config::{
     AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
     HeartbeatConfig, HttpRequestConfig, IMessageConfig, LarkConfig, MatrixConfig, MemoryConfig,
     ObservabilityConfig, RuntimeConfig, SecretsConfig, SlackConfig, StorageConfig, TelegramConfig,
-    WebFetchConfig, WebSearchConfig, WebhookConfig,
+    WebFetchConfig, WebhookConfig,
 };
 use crate::hardware::{self, HardwareConfig};
 use crate::memory::{
@@ -112,7 +112,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
     let (composio_config, secrets_config) = setup_tool_mode()?;
 
     print_step(6, 10, "Web & Internet Tools");
-    let (web_search_config, web_fetch_config, http_request_config) = setup_web_tools()?;
+    let (web_fetch_config, http_request_config) = setup_web_tools()?;
 
     print_step(7, 10, "Hardware (Physical World)");
     let hardware_config = setup_hardware()?;
@@ -170,7 +170,6 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         http_request: http_request_config,
         multimodal: crate::config::MultimodalConfig::default(),
         web_fetch: web_fetch_config,
-        web_search: web_search_config,
         proxy: crate::config::ProxyConfig::default(),
         identity: crate::config::IdentityConfig::default(),
         cost: crate::config::CostConfig::default(),
@@ -545,7 +544,6 @@ async fn run_quick_setup_with_home(
         http_request: crate::config::HttpRequestConfig::default(),
         multimodal: crate::config::MultimodalConfig::default(),
         web_fetch: crate::config::WebFetchConfig::default(),
-        web_search: crate::config::WebSearchConfig::default(),
         proxy: crate::config::ProxyConfig::default(),
         identity: crate::config::IdentityConfig::default(),
         cost: crate::config::CostConfig::default(),
@@ -2983,80 +2981,10 @@ fn prompt_allowed_domains_for_tool(tool_name: &str) -> Result<Vec<String>> {
 
 // ── Step 6: Web & Internet Tools ────────────────────────────────
 
-fn setup_web_tools() -> Result<(WebSearchConfig, WebFetchConfig, HttpRequestConfig)> {
-    print_bullet("Configure web-facing tools: search, page fetch, and HTTP requests.");
+fn setup_web_tools() -> Result<(WebFetchConfig, HttpRequestConfig)> {
+    print_bullet("Configure web-facing tools: page fetch and HTTP requests.");
+    print_bullet("web_search_tool is always enabled (uses env vars: BRAVE_SEARCH_API_KEY, EXA_API_KEY, SCRAPECREATORS_API_KEY).");
     print_bullet("You can always change these later in config.toml.");
-    println!();
-
-    // ── Web Search ──────────────────────────────────────────────
-    let mut web_search_config = WebSearchConfig::default();
-    let enable_web_search = Confirm::new()
-        .with_prompt("  Enable web_search_tool?")
-        .default(false)
-        .interact()?;
-
-    if enable_web_search {
-        web_search_config.enabled = true;
-
-        let provider_options = vec![
-            "DuckDuckGo (free, no API key)",
-            "Brave Search (requires API key)",
-            #[cfg(feature = "firecrawl")]
-            "Firecrawl (requires API key + firecrawl feature)",
-        ];
-        let provider_choice = Select::new()
-            .with_prompt("  web_search provider")
-            .items(&provider_options)
-            .default(0)
-            .interact()?;
-
-        match provider_choice {
-            1 => {
-                web_search_config.provider = "brave".to_string();
-                let key: String = Input::new()
-                    .with_prompt("  Brave Search API key")
-                    .interact_text()?;
-                if !key.trim().is_empty() {
-                    web_search_config.brave_api_key = Some(key.trim().to_string());
-                }
-            }
-            #[cfg(feature = "firecrawl")]
-            2 => {
-                web_search_config.provider = "firecrawl".to_string();
-                let key: String = Input::new()
-                    .with_prompt("  Firecrawl API key")
-                    .interact_text()?;
-                if !key.trim().is_empty() {
-                    web_search_config.api_key = Some(key.trim().to_string());
-                }
-                let url: String = Input::new()
-                    .with_prompt(
-                        "  Firecrawl API URL (leave blank for cloud https://api.firecrawl.dev)",
-                    )
-                    .allow_empty(true)
-                    .interact_text()?;
-                if !url.trim().is_empty() {
-                    web_search_config.api_url = Some(url.trim().to_string());
-                }
-            }
-            _ => {
-                web_search_config.provider = "duckduckgo".to_string();
-            }
-        }
-
-        println!(
-            "  {} web_search: {} enabled",
-            style("✓").green().bold(),
-            style(web_search_config.provider.as_str()).green()
-        );
-    } else {
-        println!(
-            "  {} web_search_tool: {}",
-            style("✓").green().bold(),
-            style("disabled").dim()
-        );
-    }
-
     println!();
 
     // ── Web Fetch ───────────────────────────────────────────────
@@ -3147,7 +3075,7 @@ fn setup_web_tools() -> Result<(WebSearchConfig, WebFetchConfig, HttpRequestConf
         );
     }
 
-    Ok((web_search_config, web_fetch_config, http_request_config))
+    Ok((web_fetch_config, http_request_config))
 }
 
 // ── Step 5: Tool Mode & Security ────────────────────────────────

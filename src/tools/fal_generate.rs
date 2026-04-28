@@ -36,12 +36,24 @@ impl Tool for FalGenerateTool {
     }
 
     fn description(&self) -> &str {
-        "Generate images or videos using AI models. Results are automatically sent to the conversation.\n\
+        "Generate images, videos, or music using AI models. Results are automatically sent to the conversation.\n\
          Models:\n\
-         - nanobanana: Text-to-image (supports text rendering in images)\n\
-         - nanobanana_edit: Image-to-image editing (requires image_urls, up to 14 reference images)\n\
-         - seedance_t2v: Text-to-video (720p, 4-15 seconds, with audio)\n\
-         - seedance_i2v: Image-to-video (requires image_url, 720p, 4-15 seconds)\n\
+         - nanobanana: Text-to-image (supports text rendering)\n\
+         - nanobanana_edit: Image-to-image editing (requires image_urls, up to 14 refs)\n\
+         - gpt_image_edit: GPT Image 2 editing (requires image_urls)\n\
+         - seedance_t2v: Text-to-video (720p, 4-15s, with audio)\n\
+         - seedance_i2v: Image-to-video (requires image_url, 720p)\n\
+         - seedance_r2v: Reference-to-video (requires image_urls, multi-ref)\n\
+         - seedance_fast_t2v: Fast text-to-video (720p)\n\
+         - seedance_fast_i2v: Fast image-to-video (requires image_url)\n\
+         - seedance_fast_r2v: Fast reference-to-video (requires image_urls)\n\
+         - happy_horse_t2v: Text-to-video (Alibaba, 1080p)\n\
+         - happy_horse_r2v: Reference-to-video (Alibaba, requires image_urls)\n\
+         - kling_pro_t2v: Kling Pro text-to-video (1080p)\n\
+         - kling_pro_r2v: Kling Pro reference-to-video (requires image_urls)\n\
+         - kling_pro_v2v: Kling Pro video editing (requires video_url)\n\
+         - sonauto: Text-to-music (Sonauto)\n\
+         - minimax_music: Text-to-music (MiniMax)\n\
          The task runs asynchronously — you'll get a task_id back immediately."
     }
 
@@ -51,8 +63,15 @@ impl Tool for FalGenerateTool {
             "properties": {
                 "model": {
                     "type": "string",
-                    "enum": ["nanobanana", "nanobanana_edit", "seedance_t2v", "seedance_i2v"],
-                    "description": "nanobanana=文生图, nanobanana_edit=图生图, seedance_t2v=文生视频, seedance_i2v=图生视频"
+                    "enum": [
+                        "nanobanana", "nanobanana_edit", "gpt_image_edit",
+                        "seedance_t2v", "seedance_i2v", "seedance_r2v",
+                        "seedance_fast_t2v", "seedance_fast_i2v", "seedance_fast_r2v",
+                        "happy_horse_t2v", "happy_horse_r2v",
+                        "kling_pro_t2v", "kling_pro_r2v", "kling_pro_v2v",
+                        "sonauto", "minimax_music"
+                    ],
+                    "description": "Model alias. Image: nanobanana/nanobanana_edit/gpt_image_edit. Video: seedance_*/happy_horse_*/kling_pro_*. Music: sonauto/minimax_music."
                 },
                 "prompt": {
                     "type": "string",
@@ -60,16 +79,20 @@ impl Tool for FalGenerateTool {
                 },
                 "image_url": {
                     "type": "string",
-                    "description": "Input image path (required for seedance_i2v). Use the storage path from message content directly (e.g. 'abc123/images/fal_1.png'). Do NOT construct URLs yourself."
+                    "description": "Input image path (required for seedance_i2v/seedance_fast_i2v). Use the storage path from message content directly. Do NOT construct URLs yourself."
                 },
                 "image_urls": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Reference image paths (required for nanobanana_edit, max 14). Use storage paths from message content directly. Do NOT construct URLs."
+                    "description": "Reference image paths (required for nanobanana_edit/gpt_image_edit/seedance_r2v/seedance_fast_r2v/happy_horse_r2v/kling_pro_r2v). Use storage paths from message content directly."
+                },
+                "video_url": {
+                    "type": "string",
+                    "description": "Input video path (required for kling_pro_v2v). Use the storage path from message content directly."
                 },
                 "num_images": {
                     "type": "integer",
-                    "description": "Number of images to generate (default 1)"
+                    "description": "Number of images to generate (default 1, image models only)"
                 },
                 "duration": {
                     "type": "string",
@@ -77,7 +100,7 @@ impl Tool for FalGenerateTool {
                 },
                 "resolution": {
                     "type": "string",
-                    "description": "Resolution: 1K/2K for images, 480p/720p for videos"
+                    "description": "Resolution: 1K/2K for images, 480p/720p/1080p for videos"
                 },
                 "aspect_ratio": {
                     "type": "string",
@@ -121,16 +144,17 @@ impl Tool for FalGenerateTool {
 
         // ── Model-specific parameter validation ──
 
-        if model == "seedance_i2v" {
+        // Models requiring image_url
+        if matches!(model, "seedance_i2v" | "seedance_fast_i2v") {
             let image_url = args.get("image_url").and_then(|v| v.as_str()).unwrap_or("");
             if image_url.is_empty() {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some(
-                        "seedance_i2v 需要 image_url 参数。请从会话消息中获取图片的存储路径（如 \"abc123/images/fal_1.png\"），\
-                        直接作为 image_url 传入，不要自己拼接 URL。网关会自动处理图片中转。".to_string()
-                    ),
+                    error: Some(format!(
+                        "{model} 需要 image_url 参数。请从会话消息中获取图片的存储路径（如 \"abc123/images/fal_1.png\"），\
+                        直接作为 image_url 传入，不要自己拼接 URL。网关会自动处理图片中转。"
+                    )),
                 });
             }
             if image_url.starts_with("http") && !is_trusted_image_url(image_url) {
@@ -146,16 +170,17 @@ impl Tool for FalGenerateTool {
             }
         }
 
-        if model == "nanobanana_edit" {
+        // Models requiring image_urls
+        if matches!(model, "nanobanana_edit" | "gpt_image_edit" | "seedance_r2v" | "seedance_fast_r2v" | "happy_horse_r2v" | "kling_pro_r2v") {
             let urls = args.get("image_urls").and_then(|v| v.as_array());
             if urls.map_or(true, |arr| arr.is_empty()) {
                 return Ok(ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some(
-                        "nanobanana_edit 需要 image_urls 参数（字符串数组，最多14张参考图）。\
-                        请从会话消息中获取图片的存储路径，直接作为数组元素传入。".to_string()
-                    ),
+                    error: Some(format!(
+                        "{model} 需要 image_urls 参数（字符串数组）。\
+                        请从会话消息中获取图片的存储路径，直接作为数组元素传入。"
+                    )),
                 });
             }
             for u in urls.unwrap() {
@@ -171,6 +196,21 @@ impl Tool for FalGenerateTool {
                         });
                     }
                 }
+            }
+        }
+
+        // Models requiring video_url
+        if model == "kling_pro_v2v" {
+            let video_url = args.get("video_url").and_then(|v| v.as_str()).unwrap_or("");
+            if video_url.is_empty() {
+                return Ok(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(
+                        "kling_pro_v2v 需要 video_url 参数。请从会话消息中获取视频的存储路径，\
+                        直接作为 video_url 传入，不要自己拼接 URL。".to_string()
+                    ),
+                });
             }
         }
 
@@ -193,6 +233,7 @@ impl Tool for FalGenerateTool {
         for key in &[
             "image_url",
             "image_urls",
+            "video_url",
             "num_images",
             "duration",
             "resolution",
