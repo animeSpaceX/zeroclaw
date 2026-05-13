@@ -108,7 +108,7 @@ impl Tool for GroupManagementTool {
     }
 
     fn description(&self) -> &str {
-        "Manage IM group conversations — create/delete groups, invite/remove agents and users, update settings, list members, list available roles, dispatch tasks to agents."
+        "Manage IM group conversations — create/delete groups, invite/remove agents and users, update settings, list members, and list available roles. Do not dispatch work with this tool; create tasks with task_management so the scheduler dispatches them."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -120,7 +120,7 @@ impl Tool for GroupManagementTool {
                     "enum": [
                         "list_groups", "create_group", "delete_group", "update_group",
                         "list_members", "invite_agent", "remove_agent",
-                        "invite_user", "list_roles", "dispatch", "update_member_profile",
+                        "invite_user", "list_roles", "update_member_profile",
                         "lock_routing", "unlock_routing"
                     ],
                     "description": "The operation to perform"
@@ -150,10 +150,6 @@ impl Tool for GroupManagementTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "User IDs to invite at creation (for create_group)"
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Message to dispatch to an agent (for dispatch action)"
                 },
                 "member_type": {
                     "type": "string",
@@ -409,44 +405,6 @@ impl Tool for GroupManagementTool {
                     .await)
             }
 
-            "dispatch" => {
-                let role = args["role"].as_str().unwrap_or("");
-                let message = args["message"].as_str().unwrap_or("");
-                if role.is_empty() || message.is_empty() {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("role and message are required for dispatch".to_string()),
-                    });
-                }
-                // Dispatch to agent via the team API (synchronous, waits up to 120s)
-                let url = format!(
-                    "{}/api/teams/{}/agents/{}/dispatch",
-                    self.gateway_url.trim_end_matches('/'),
-                    self.agent_id,
-                    role
-                );
-                let mut req = self
-                    .client()
-                    .post(&url)
-                    .header("X-API-Key", &self.api_key)
-            .header("X-Agent-Id", &self.agent_id)
-                    .json(&json!({ "message": message }))
-                    .timeout(std::time::Duration::from_secs(150));
-                match req.send().await {
-                    Ok(r) if r.status().is_success() => {
-                        let text = r.text().await.unwrap_or_default();
-                        Ok(ToolResult { success: true, output: text, error: None })
-                    }
-                    Ok(r) => {
-                        let status = r.status();
-                        let text = r.text().await.unwrap_or_default();
-                        Ok(ToolResult { success: false, output: String::new(), error: Some(format!("API error ({status}): {text}")) })
-                    }
-                    Err(e) => Ok(ToolResult { success: false, output: String::new(), error: Some(format!("Request failed: {e}")) }),
-                }
-            }
-
             "update_member_profile" => {
                 if conv_id.is_empty() {
                     return Ok(ToolResult {
@@ -510,7 +468,7 @@ impl Tool for GroupManagementTool {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Unknown action '{action}'. Use: create_group, delete_group, update_group, list_members, invite_agent, remove_agent, invite_user, list_roles, dispatch, update_member_profile, lock_routing, unlock_routing"
+                    "Unknown action '{action}'. Use: create_group, delete_group, update_group, list_members, invite_agent, remove_agent, invite_user, list_roles, update_member_profile, lock_routing, unlock_routing. To assign work, use task_management create_plan and let the scheduler dispatch it."
                 )),
             }),
         }
